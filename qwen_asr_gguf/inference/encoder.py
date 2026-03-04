@@ -3,10 +3,10 @@ import os
 import time
 import numpy as np
 import onnxruntime as ort
-import scipy.signal
+
 
 class FastWhisperMel:
-    """基于 NumPy 和 SciPy 的纯净版 Mel 提取器 (彻底干掉 librosa 的 numba JIT 启动延时)"""
+    """基于 NumPy 的纯净版 Mel 提取器 (彻底干掉 librosa 的 numba JIT 启动延时)"""
     def __init__(self, filter_path: str = None, n_mels=128, sr=16000, n_fft=400, f_min=0, f_max=8000, norm="slaney", mel_scale="slaney"):
         self.n_fft = n_fft
         self.hop_length = 160
@@ -18,7 +18,7 @@ class FastWhisperMel:
             self.filters = self._generate_filters(sr, n_fft, n_mels, f_min, f_max, norm, mel_scale)
             
         # 提前计算并缓存好汉明窗 (Qwen3/Whisper/Librosa 使用 Hann 窗)
-        self.window = scipy.signal.get_window('hann', self.n_fft, fftbins=True)
+        self.window = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(self.n_fft) / self.n_fft)
         
     def _generate_filters(self, sr, n_fft, n_mels, f_min, f_max, norm, mel_scale):
         """
