@@ -242,7 +242,7 @@ class QwenForcedAligner:
             frontend_path=fe_path,
             backend_path=be_path, # 传入 backend
             use_dml=use_dml,
-            warmup_sec=5.0,
+            pad_to=config.pad_to,
             verbose=False
         )
 

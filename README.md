@@ -257,31 +257,24 @@ res = engine.transcribe(
 
 ```
 
-## 工作原理
-
-项目采用 **主进程控制 + 辅助进程计算** 的并行架构，最大化利用 CPU/GPU 资源：
+项目采用**纯同步顺序执行**架构，得益于 Encoder 在开启 DirectML 后的极速表现（30s 音频仅需约 0.04s），现已移除复杂的多进程异步流水线，简化为：
 
 ```mermaid
 graph TD
-    A[音频输入] --> B[主进程: QwenASREngine]
-    B --> C{多进程任务分发}
-    C -- 编码 --> D[辅助进程: Encode Worker]
-    C -- 对齐 --> E[辅助进程: Align Worker]
-    
-    D --> F[ONNX Encoder]
-    F --> G[音频特征 Embedding]
-    G --> B
-    
-    B --> H[llama.cpp GGUF Decoder]
-    H --> I[转录文本]
-    
-    I --> E
-    E --> J[强行对齐 + 字级时间戳]
-    J --> B
+    A[音频输入] --> B[QwenASREngine]
+    B -- 音频切片 --> C[QwenAudioEncoder]
+    C --> D[ONNX Encoder]
+    D -- 固定形状 Padding/Masking --> D
+    D --> E[音频特征 Embedding]
+    E --> F[llama.cpp GGUF Decoder]
+    F --> G[转录文本]
+    G -- 启用对齐时 --> H[QwenForcedAligner]
+    H --> I[字级时间戳]
+    I --> B
 ```
 
-- **主进程**: 负责音频切割、ASR LLM 解码。
-- **辅助进程**: 音频特征提取（Encoder）、字级时间戳对齐（Aligner），与主进程异步并行，消除计算瓶颈。
+- **同步执行**: `编码 -> LLM 推理 -> 对齐` 顺序完成，代码更简洁，RTF 依然保持领先。
+- **DML 形状固定优化**: 推理时将音频填充（Padding）到固定长度（如 40s），并配合 Attention Mask。这解决了 DirectML 在处理动态形状时频繁分配显存导致的性能抖动，显著提升了推理速度。
 
 
 ## 项目结构
@@ -307,7 +300,6 @@ graph TD
 └── qwen_asr_gguf/
     └── inference/
         ├── asr.py                  # ASR 核心引擎逻辑
-        ├── asr_worker.py           # 异步辅助进程逻辑
         ├── aligner.py              # 强行对齐逻辑
         ├── encoder.py              # 音频特征提取逻辑 (ONNX 封装)
         ├── llama.py                # llama.cpp Python 绑定
