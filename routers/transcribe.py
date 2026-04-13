@@ -265,13 +265,16 @@ async def transcribe_stream(
         """
         生成 SSE 事件流。
         - text 为空的分片不输出
-        - 每 15 秒发送 SSE 注释心跳 `: keepalive`，防止连接被代理/客户端超时断开
+        - 每 8 秒发送 SSE 注释心跳 `: keepalive`，防止连接被代理/客户端超时断开
 
         重要: 使用 asyncio.wait (非 wait_for) 实现心跳，
         确保超时时 **不取消** 底层迭代协程，避免工作线程仍在推理时
         锁被意外释放导致并发崩溃。
+
+        心跳间隔设为 8 秒，远低于常见反向代理默认超时 (Nginx proxy_read_timeout=60s)，
+        确保即使在多层代理环境下也能保持连接存活。
         """
-        HEARTBEAT_INTERVAL = 15  # 心跳间隔 (秒)
+        HEARTBEAT_INTERVAL = 8  # 心跳间隔 (秒)，需低于代理最小超时
         _STREAM_END = object()  # 流结束哨兵
 
         async def _safe_anext(aiter):
@@ -285,6 +288,7 @@ async def transcribe_stream(
         stream_aiter = None
         try:
             audio_duration = 0.0
+            logger.info(f"[流式] SSE 连接已建立: {file.filename}")
             stream_iter = service.stream_transcribe(
                 audio_path=tmp_path,
                 context=context,
@@ -296,6 +300,7 @@ async def transcribe_stream(
 
             chunk_count = 0
             empty_count = 0
+            heartbeat_count = 0
 
             while True:
                 # 为下一次迭代创建 Task（不会被心跳超时取消）
@@ -307,6 +312,11 @@ async def transcribe_stream(
                         {next_task}, timeout=HEARTBEAT_INTERVAL
                     )
                     if not done:
+                        heartbeat_count += 1
+                        logger.debug(
+                            f"[流式] 心跳 #{heartbeat_count} | "
+                            f"已完成 {chunk_count} 个分片"
+                        )
                         yield ": keepalive\n\n"
 
                 result = next_task.result()
@@ -360,11 +370,18 @@ async def transcribe_stream(
             yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
 
         except asyncio.CancelledError:
-            logger.warning("[流式] 转写任务被取消")
+            logger.warning(
+                f"[流式] 转写任务被取消 | "
+                f"已完成 {chunk_count} 个分片, {heartbeat_count} 次心跳"
+            )
             yield f"data: {json.dumps({'type': 'error', 'message': '转写任务被取消'}, ensure_ascii=False)}\n\n"
 
         except Exception as exc:
-            logger.error(f"[流式] 转写异常: {exc}", exc_info=True)
+            logger.error(
+                f"[流式] 转写异常: {exc} | "
+                f"已完成 {chunk_count} 个分片, {heartbeat_count} 次心跳",
+                exc_info=True,
+            )
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
 
         finally:
@@ -375,15 +392,21 @@ async def transcribe_stream(
                 except Exception:
                     pass
             service._remove_tmp(tmp_path)
+            logger.info(
+                f"[流式] SSE 连接关闭: {file.filename} | "
+                f"分片={chunk_count}, 空={empty_count}, 心跳={heartbeat_count}"
+            )
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         _event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
             "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲，保证实时推送
             "Connection": "keep-alive",
+            "Transfer-Encoding": "chunked",  # 显式声明分块传输
+            "X-Content-Type-Options": "nosniff",  # 防止浏览器嗅探中断 SSE
         },
     )
 
