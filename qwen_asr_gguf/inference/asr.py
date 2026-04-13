@@ -89,7 +89,9 @@ class QwenASREngine:
         self.vad = None
 
         # 4. 加载识别 LLM
-        self.model = llama.LlamaModel(llm_gguf)
+        self.model = llama.LlamaModel(
+            llm_gguf, n_gpu_layers=99 if config.use_gpu else 0
+        )
         self.embedding_table = llama.get_token_embeddings_gguf(llm_gguf)
         self.ctx = llama.LlamaContext(
             self.model, n_ctx=config.n_ctx, n_batch=4096, embeddings=False
