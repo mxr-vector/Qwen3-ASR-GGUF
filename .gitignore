@@ -1,0 +1,21 @@
+.idea/
+__pycache__/
+build/
+dist/
+datasets/
+log/
+test*.py
+dataset/
+audio_db/
+output/
+models/
+feature_models/
+# Ignore VSCode settings
+.vscode/
+.venv/
+logs/
+*.tar
+outputs/
+*.txt
+*bin/
+uploads/

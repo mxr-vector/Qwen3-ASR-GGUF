@@ -1,0 +1,101 @@
+[project]
+name = "qwen3-asr-gguf"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]>=0.135.1",
+    "gguf>=0.18.0",
+    "librosa>=0.11.0",
+    "loguru>=0.7.3",
+    "nagisa>=0.2.12",
+    "numpy>=2.4.2",
+    "onnxscript>=0.6.2",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "python-multipart>=0.0.22",
+    "sentencepiece>=0.2.1",
+    "soundfile>=0.13.1",
+    "srt>=3.5.3",
+    "typer>=0.24.1",
+    "uvicorn[standard]>=0.41.0",
+]
+
+
+
+# 指定 extra 依赖
+[project.optional-dependencies]
+cpu = [
+  "torch==2.10.0+cpu",
+  "torchvision==0.25.0+cpu",
+  "torchaudio==2.10.0+cpu",
+  "onnxruntime",
+]
+
+cu128 = [
+  "torch==2.10.0+cu128",
+  "torchvision==0.25.0+cu128",
+  "torchaudio==2.10.0+cu128",
+  "onnxruntime-gpu",
+]
+
+win = [
+  "torch==2.10.0+cpu",
+  "torchvision==0.25.0+cpu",
+  "torchaudio==2.10.0+cpu",
+  "onnxruntime-directml",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "win" },
+    { extra = "cu128" },
+  ],
+]
+
+# 指定源
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cpu", extra = "win" },
+  { index = "pytorch-cu128", extra = "cu128" },
+]
+torchvision = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cpu", extra = "win" },
+  { index = "pytorch-cu128", extra = "cu128" },
+]
+torchaudio = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cpu", extra = "win" },
+  { index = "pytorch-cu128", extra = "cu128" },
+]
+
+# 官方 PyPI 镜像（默认国内源可选）
+[[tool.uv.index]]
+name = "internal-proxy"
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
+default = true
+
+[[tool.uv.index]]
+name = "aliyun"
+url = "https://mirrors.aliyun.com/pypi/simple/"
+
+[[tool.uv.index]]
+name = "huawei"
+url = "https://mirrors.huaweicloud.com/repository/pypi/simple"
+
+# PyTorch 官方 CPU wheel
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://mirrors.nju.edu.cn/pytorch/whl/cpu"
+explicit = true
+
+
+# PyTorch 官方 GPU wheel
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://mirrors.nju.edu.cn/pytorch/whl/cu128"
