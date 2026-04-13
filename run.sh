@@ -6,6 +6,20 @@ HOST="0.0.0.0"
 PORT=8002
 PID_FILE="logs/app.pid"
 
+# ─── Docker 前台模式（推荐） ──────────────────────────────────────────────
+# 在 Docker 容器中必须使用此模式：uvicorn 作为 PID 1 前台运行，
+# 确保信号能正确传递（SIGTERM 优雅关闭）、日志输出到 stdout、
+# 长连接 SSE 流不会因容器进程管理机制而被意外中断。
+serve() {
+    echo "Starting Qwen3-ASR Fast API Service (foreground mode)..."
+    mkdir -p logs
+    exec uvicorn "$APP_MODULE" \
+        --host "$HOST" \
+        --port "$PORT" \
+        --timeout-keep-alive 600
+}
+
+# ─── 后台模式（仅限裸机/VM 部署） ───────────────────────────────────────
 start() {
     echo "Starting Qwen3-ASR Fast API Service..."
     if [ -f "$PID_FILE" ]; then
@@ -47,6 +61,9 @@ restart() {
 }
 
 case "$1" in
+    serve)
+        serve
+        ;;
     start)
         start
         ;;
@@ -57,6 +74,10 @@ case "$1" in
         restart
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart}"
+        echo "Usage: $0 {serve|start|stop|restart}"
+        echo "  serve   - 前台运行 (Docker 容器必须用此模式)"
+        echo "  start   - 后台运行 (裸机/VM 部署)"
+        echo "  stop    - 停止后台服务"
+        echo "  restart - 重启后台服务"
         exit 1
 esac
