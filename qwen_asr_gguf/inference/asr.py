@@ -23,6 +23,7 @@ from .utils import (
     normalize_language_name,
     validate_language,
     detect_and_fix_repetitions,
+    is_hallucination,
 )
 from .encoder import QwenAudioEncoder
 
@@ -284,10 +285,11 @@ class QwenASREngine:
                 if piece:
                     stable_text_acc += piece
 
-            # 保守逃逸阀：仅在极端死循环时熔断（≥100 token 只有 ≤2 种 unique）
-            # 正常重复交由解码完成后的 detect_and_fix_repetitions() 后处理
-            if len(stable_tokens) >= 100:
-                if len(set(stable_tokens[-100:])) <= 2:
+            # 逃逸阀：检测 token 级死循环重复并提前熔断
+            # 窗口 40 token / ≤3 种 unique，可捕获 "空格+洞" 等 2~3 种 token 交替模式
+            # 后续 is_hallucination() 会进一步兜底过滤
+            if len(stable_tokens) >= 40:
+                if len(set(stable_tokens[-40:])) <= 3:
                     result.is_aborted = True
                     break
 
@@ -871,6 +873,34 @@ class QwenASREngine:
                     temperature,
                     max_new_tokens,
                 )
+
+                # ── 幻觉过滤 ─────────────────────────────────────────────
+                # 检测 LLM 输出是否为重复单字幻觉（如 "洞洞洞..."、"三三三..."）
+                # 若检测到幻觉，将文本置空并标记为跳过，不污染累积全文和记忆
+                if is_hallucination(res.text):
+                    logger.warning(
+                        f"[分片 {i}] 检测到幻觉输出，已丢弃 | "
+                        f"原文: {res.text[:50]}{'...' if len(res.text) > 50 else ''}"
+                    )
+                    stats["vad_skipped_chunks"] += 1
+                    chunk_result = StreamChunkResult(
+                        segment_idx=i,
+                        text="",
+                        start_sec=start_sec,
+                        end_sec=end_sec,
+                        is_last=is_last,
+                        skipped_by_vad=True,
+                        full_text=total_full_text if is_last else "",
+                    )
+                    if is_last:
+                        t_total = time.time() - t_main_start
+                        if self.verbose:
+                            self._print_stats(stats, total_duration, t_total)
+                        stats["audio_duration"] = total_duration
+                        setattr(chunk_result, "_stats", stats)
+                        setattr(chunk_result, "_align_items", [])
+                    yield chunk_result
+                    continue
 
                 # 更新记忆
                 if vad_mode:
