@@ -258,11 +258,6 @@ async def transcribe_stream(
 
     service = get_asr_service()
 
-    # 将二进制写入临时文件（service 内部管理生命周期）
-    tmp_path = service._save_tmp(
-        content, file.filename or generate_unique_filename(suffix=".wav")
-    )  # 使用 UUID 避免文件名冲突
-
     async def _event_generator() -> AsyncGenerator[str, None]:
         """
         生成 SSE 事件流。
@@ -272,12 +267,13 @@ async def transcribe_stream(
         重要: 使用 asyncio.wait (非 wait_for) 实现心跳，
         确保超时时 **不取消** 底层迭代协程，避免工作线程仍在推理时
         锁被意外释放导致并发崩溃。
-
-        心跳间隔设为 8 秒，远低于常见反向代理默认超时 (Nginx proxy_read_timeout=60s)，
-        确保即使在多层代理环境下也能保持连接存活。
         """
         HEARTBEAT_INTERVAL = 8  # 心跳间隔 (秒)，需低于代理最小超时
         _STREAM_END = object()  # 流结束哨兵
+        chunk_count = 0
+        empty_count = 0
+        heartbeat_count = 0
+        audio_duration = 0.0
 
         async def _safe_anext(aiter):
             """安全获取下一个元素，用哨兵替代 StopAsyncIteration"""
@@ -286,27 +282,21 @@ async def transcribe_stream(
             except StopAsyncIteration:
                 return _STREAM_END
 
-        stream_iter = None
-        stream_aiter = None
+        stream = None
         try:
-            audio_duration = 0.0
             logger.info(f"[流式] SSE 连接已建立: {file.filename}")
-            stream_iter = service.stream_transcribe(
-                audio_path=tmp_path,
+            stream = service.stream_transcribe_bytes(
+                audio_bytes=content,
+                filename=file.filename or generate_unique_filename(suffix=".wav"),
                 context=context,
                 language=language,
                 temperature=temperature,
                 enable_aligner=enable_aligner,
             )
-            stream_aiter = stream_iter.__aiter__()
-
-            chunk_count = 0
-            empty_count = 0
-            heartbeat_count = 0
 
             while True:
                 # 为下一次迭代创建 Task（不会被心跳超时取消）
-                next_task = asyncio.ensure_future(_safe_anext(stream_aiter))
+                next_task = asyncio.ensure_future(_safe_anext(stream))
 
                 # 等待推理完成，期间每隔 HEARTBEAT_INTERVAL 发送心跳
                 while not next_task.done():
@@ -390,12 +380,11 @@ async def transcribe_stream(
 
         finally:
             # 显式关闭底层异步生成器，确保 asyncio.Lock 被释放
-            if stream_iter is not None:
+            if stream is not None:
                 try:
-                    await stream_iter.aclose()
+                    await stream.aclose()
                 except Exception:
                     pass
-            service._remove_tmp(tmp_path)
             logger.info(
                 f"[流式] SSE 连接关闭: {file.filename} | "
                 f"分片={chunk_count}, 空={empty_count}, 心跳={heartbeat_count}"

@@ -185,6 +185,10 @@ class ASREngineConfig:
         10.0  # 音频时长 (秒) 超过此阈值时自动启用 VAD 动态分片
     )
 
+    # CPU 推理线程配置 (0 = 自动)
+    n_threads: int = 0
+    n_threads_batch: int = 0
+
     def __post_init__(self):
         # 如果没有显式设置 Encoder 填充时长，则默认与 LLM 分段识别时长对齐
         if self.pad_to is None:

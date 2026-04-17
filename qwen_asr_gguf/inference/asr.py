@@ -76,6 +76,7 @@ class QwenASREngine:
             use_gpu=config.use_gpu,
             pad_to=encoder_pad_to,
             verbose=self.verbose,
+            n_threads=config.n_threads,
         )
 
         # 2. 初始化 Aligner (可选)
@@ -94,7 +95,9 @@ class QwenASREngine:
         )
         self.embedding_table = llama.get_token_embeddings_gguf(llm_gguf)
         self.ctx = llama.LlamaContext(
-            self.model, n_ctx=config.n_ctx, n_batch=4096, embeddings=False
+            self.model, n_ctx=config.n_ctx, n_batch=4096, embeddings=False,
+            n_threads=config.n_threads or None,
+            n_threads_batch=config.n_threads_batch or None,
         )
 
         # 缓存 Token ID
@@ -753,7 +756,7 @@ class QwenASREngine:
                 # 非末尾分片：在 chunk 尾部额外附加 1 秒音频，让编码器
                 # "多听一秒"，使 LLM 能在边界处解码出完整的词句而非截断。
                 # 此缓冲仅影响编码输入，不影响报告的 start_sec/end_sec。
-                BOUNDARY_PAD_SEC = 1.0
+                BOUNDARY_PAD_SEC = 2.0
                 if not vad_mode and not is_last:
                     padded_end = min(int((end_sec + BOUNDARY_PAD_SEC) * sr), total_len)
                     if padded_end > e_smpl:
@@ -762,6 +765,35 @@ class QwenASREngine:
                 # ── Step 1: 静音跳过 ──────────────────────────────────────
                 if not has_speech:
                     stats["vad_skipped_chunks"] += 1
+                    chunk_result = StreamChunkResult(
+                        segment_idx=i,
+                        text="",
+                        start_sec=start_sec,
+                        end_sec=end_sec,
+                        is_last=is_last,
+                        skipped_by_vad=True,
+                        full_text=total_full_text if is_last else "",
+                    )
+                    if is_last:
+                        t_total = time.time() - t_main_start
+                        if self.verbose:
+                            self._print_stats(stats, total_duration, t_total)
+                        stats["audio_duration"] = total_duration
+                        setattr(chunk_result, "_stats", stats)
+                        setattr(chunk_result, "_align_items", [])
+                    yield chunk_result
+                    continue
+
+                # ── 短语音跳过（VAD 模式）───────────────────────────────
+                # 语音长度 <0.3s 的分片几乎无有效信息，LLM 易在极短输入
+                # 上产生幻觉文本（如随机数字、重复字符），直接跳过。
+                if vad_mode and speech_sec < 0.3:
+                    stats["vad_skipped_chunks"] += 1
+                    if self.verbose:
+                        logger.debug(
+                            f"  [VAD] 分片 #{i:02d} 语音过短 "
+                            f"({speech_sec:.2f}s < 0.3s)，跳过"
+                        )
                     chunk_result = StreamChunkResult(
                         segment_idx=i,
                         text="",
@@ -829,7 +861,7 @@ class QwenASREngine:
 
                 # token 预算：按实际语音时长等比缩放（12 tokens/s 上限）
                 # 例：5s 语音 → 最多 60 tokens，防止在短/稀疏音频上过度生成
-                max_new_tokens = min(512, max(64, int(speech_sec * 16)))
+                max_new_tokens = min(512, max(32, int(speech_sec * 12)))
 
                 res = self._safe_decode(
                     full_embd,

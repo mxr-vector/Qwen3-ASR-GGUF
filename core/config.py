@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE_MB: int = 120
 
+    # Inference CPU thread settings
+    # 0 = 自动 (n_threads = cpu_count//4, n_threads_batch = cpu_count)
+    INFERENCE_CPU_THREADS: int = 16
+    INFERENCE_CPU_THREADS_BATCH: int = 32
+
     # Default context for ASR
     DEFAULT_CONTEXT: str = ""
 

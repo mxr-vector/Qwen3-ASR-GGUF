@@ -99,6 +99,8 @@ class ASRService:
             align_config=align_config,
             vad_config=vad_config,
             dynamic_chunk_threshold=settings.ASR_DYNAMIC_CHUNK_THRESHOLD,
+            n_threads=settings.INFERENCE_CPU_THREADS,
+            n_threads_batch=settings.INFERENCE_CPU_THREADS_BATCH,
         )
 
     def shutdown(self):
