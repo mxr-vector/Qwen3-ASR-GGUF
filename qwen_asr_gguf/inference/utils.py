@@ -55,12 +55,13 @@ def validate_language(language: str) -> None:
         raise ValueError(f"Unsupported language: {language}. Supported: {SUPPORTED_LANGUAGES}")
 
 
-def detect_and_fix_repetitions(text: str, threshold: int = 20) -> str:
+def detect_and_fix_repetitions(text: str, threshold: int = 4) -> str:
     """
     检测并修复文本中的异常重复模式（移植自官方 qwen_asr/inference/utils.py）。
 
     适用于 ASR 解码后的后处理，去除模型幻觉产生的大量重复字符或短语。
-    threshold=20 表示同一模式连续出现 ≥20 次才触发去重，避免误伤正常文本。
+    threshold=4 表示同一模式连续出现 ≥4 次才触发去重。
+    降低阈值以捕获 " 洞 洞 洞 洞" 等空格间隔的重复幻觉模式。
 
     Args:
         text: 待处理文本
@@ -131,3 +132,51 @@ def detect_and_fix_repetitions(text: str, threshold: int = 20) -> str:
     text = fix_char_repeats(text, threshold)
     text = fix_pattern_repeats(text, threshold)
     return text
+
+
+def is_hallucination(text: str, min_length: int = 4, max_unique_ratio: float = 0.1) -> bool:
+    """
+    检测 ASR 输出文本是否为幻觉（单字/双字高频重复的无意义输出）。
+
+    判定规则（满足任一即为幻觉）：
+      1. 去除空格和标点后，唯一字符种类 ≤ 2 且文本长度 ≥ min_length
+      2. 单个字符占比 ≥ (1 - max_unique_ratio)，即 90%+ 为同一字符
+
+    典型幻觉模式：
+      - " 洞 洞 洞 洞 洞 洞 洞 洞 洞 洞"
+      - "三三三三三三三三三三"
+      - "的的的的的的的的"
+
+    Args:
+        text: 待检测文本
+        min_length: 触发检测的最小字符数（去空格后）
+        max_unique_ratio: 字符多样性阈值，低于此值则判定为幻觉
+
+    Returns:
+        True → 文本疑似幻觉，应丢弃
+        False → 文本正常
+    """
+    if not text:
+        return False
+
+    # 去除空格和常见标点
+    import re
+    cleaned = re.sub(r'[\s，。、！？,.!?\-—]+', '', text)
+
+    if len(cleaned) < min_length:
+        return False
+
+    unique_chars = set(cleaned)
+
+    # 规则 1：唯一字符 ≤ 2（如全是 "洞" 或 "三洞" 交替）
+    if len(unique_chars) <= 2:
+        return True
+
+    # 规则 2：某个字符占比 ≥ 90%（如 "三洞洞洞洞洞洞洞洞洞"，"洞"占 90%）
+    from collections import Counter
+    counts = Counter(cleaned)
+    most_common_count = counts.most_common(1)[0][1]
+    if most_common_count / len(cleaned) >= (1 - max_unique_ratio):
+        return True
+
+    return False
