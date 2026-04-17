@@ -14,11 +14,12 @@ Transcribe 路由 — 音频转写 API 接口
     GET  /asr/health                健康检查
 
 流式接口 SSE 事件格式:
-    data: {"type":"chunk","segment":0,"text":"你好","start":0.0,"end":30.0}
-    data: {"type":"chunk","segment":1,"text":"世界","start":30.0,"end":60.0,"srt":"..."}
-    data: {"type":"done","duration":60.0}
+    data: {"type":"chunk","audio_id":"<hex>","segment":0,"text":"你好","start":0.0,"end":30.0}
+    data: {"type":"chunk","audio_id":"<hex>","segment":1,"text":"世界","start":30.0,"end":60.0,"srt":"..."}
+    data: {"type":"done","audio_id":"<hex>","duration":60.0}
     data: [DONE]
-    注: text 为空的分片不输出; srt/alignment 仅在对应参数启用且有对齐数据时出现。
+    注: audio_id 为每次请求自动生成的唯一标识 (UUID hex);
+        text 为空的分片不输出; srt/alignment 仅在对应参数启用且有对齐数据时出现。
 """
 
 import asyncio
@@ -242,6 +243,7 @@ async def transcribe_batch(
 )
 async def transcribe_stream(
     file: UploadFile = File(..., description="音频文件"),
+    audio_id: str = Form(..., description="音频唯一标识，由客户端生成并传入，用于关联同一次转写的所有分片"),
     context: Optional[str] = Form(None, description="上下文提示词"),
     language: Optional[str] = Form(None, description="语言 (Chinese/English 等)"),
     temperature: float = Form(0.0, description="解码温度"),
@@ -337,6 +339,7 @@ async def transcribe_stream(
 
                 chunk_event = {
                     "type": "chunk",
+                    "audio_id": audio_id,
                     "segment": chunk.segment_idx,
                     "text": chunk.text,
                     "start": round(chunk.start_sec, 3),
@@ -363,6 +366,7 @@ async def transcribe_stream(
             # ── done 事件：完成信号、音频时长与分片统计 ─────────────────
             done_event = {
                 "type": "done",
+                "audio_id": audio_id,
                 "duration": round(audio_duration, 2),
                 "chunks_total": chunk_count,
                 "chunks_empty": empty_count,
@@ -374,7 +378,7 @@ async def transcribe_stream(
                 f"[流式] 转写任务被取消 | "
                 f"已完成 {chunk_count} 个分片, {heartbeat_count} 次心跳"
             )
-            yield f"data: {json.dumps({'type': 'error', 'message': '转写任务被取消'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'audio_id': audio_id, 'message': '转写任务被取消'}, ensure_ascii=False)}\n\n"
 
         except Exception as exc:
             logger.error(
@@ -382,7 +386,7 @@ async def transcribe_stream(
                 f"已完成 {chunk_count} 个分片, {heartbeat_count} 次心跳",
                 exc_info=True,
             )
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'audio_id': audio_id, 'message': str(exc)}, ensure_ascii=False)}\n\n"
 
         finally:
             # 显式关闭底层异步生成器，确保 asyncio.Lock 被释放
