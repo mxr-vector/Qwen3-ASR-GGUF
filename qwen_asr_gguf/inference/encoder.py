@@ -118,7 +118,7 @@ def get_feat_extract_output_lengths(input_lengths):
 
 class QwenAudioEncoder:
     """Qwen3 音频编码器 (Split Frontend + Backend)"""
-    def __init__(self, frontend_path: str, backend_path: str, use_gpu: bool = True, pad_to: int = 30, verbose: bool = True):
+    def __init__(self, frontend_path: str, backend_path: str, use_gpu: bool = True, pad_to: int = 30, verbose: bool = True, n_threads: int = 0):
         self.verbose = verbose
         self.active_gpu = False
         self.active_provider = "CPUExecutionProvider"
@@ -133,6 +133,9 @@ class QwenAudioEncoder:
         sess_opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
         sess_opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        if n_threads > 0:
+            sess_opts.intra_op_num_threads = n_threads
+            sess_opts.inter_op_num_threads = max(1, n_threads // 4)
 
         available = ort.get_available_providers()
         providers = ['CPUExecutionProvider']
