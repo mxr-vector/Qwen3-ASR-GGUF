@@ -5,7 +5,7 @@ ASR 服务层 — 线程安全的 QwenASREngine 封装
 设计要点:
 - 使用 asyncio.Lock 保证同一时刻只有一个推理任务运行（引擎不支持并发）
 - 使用 asyncio.to_thread() 将阻塞推理放入线程池，不阻塞 FastAPI 事件循环
-- 流式接口通过 asyncio.Queue + threading.Thread 桥接同步生成器与异步消费者
+- 流式接口双路径: 短音频 to_thread 快速路径 / 长音频 Thread+Queue 实时管道
 - 全局单例模式，由 lifespan 管理生命周期
 """
 import asyncio
@@ -185,6 +185,15 @@ class ASRService:
     # 流式转写（逐分片实时 yield StreamChunkResult）
     # ──────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _get_audio_duration(audio_path: str) -> float:
+        """快速获取音频时长（秒），仅读取文件头，不加载音频数据"""
+        try:
+            import soundfile as sf
+            return sf.info(audio_path).duration
+        except Exception:
+            return float("inf")  # 无法获取时走长音频路径
+
     async def stream_transcribe(
         self,
         audio_path: str,
@@ -196,11 +205,15 @@ class ASRService:
         """
         对单个音频文件执行流式转写，逐分片 yield StreamChunkResult。
 
-        实现原理:
-          1. 在独立线程中调用同步生成器 engine.transcribe_stream()
-          2. 每产出一个分片结果，通过 asyncio.Queue 投递到事件循环
-          3. 异步消费端 await queue.get() 后立即 yield 给 SSE 等调用方
-          4. 线程结束后放入哨兵 _STREAM_SENTINEL 通知消费端退出
+        双路径策略:
+          快速路径 (短音频 ≤ dynamic_chunk_threshold):
+            使用 asyncio.to_thread 一次性执行同步生成器并收集结果，
+            消除 Thread 创建/销毁、跨线程同步、Queue 锁竞争等开销，
+            短音频性能接近离线接口。
+
+          实时路径 (长音频 > dynamic_chunk_threshold):
+            在独立线程中运行同步生成器，通过 asyncio.Queue 实时投递，
+            每个分片处理完即推送，保证长音频实时流式体验。
 
         锁策略:
           流式转写全程持有 _lock，与离线转写互斥，保证引擎串行访问。
@@ -208,68 +221,98 @@ class ASRService:
         if not self._engine:
             raise RuntimeError("ASR 引擎未初始化")
 
-        async with self._lock:
-            loop = asyncio.get_event_loop()
-            queue: asyncio.Queue = asyncio.Queue(
-                maxsize=16
-            )  # 适当背压，长音频需要更大缓冲
-            logger.debug(f"[流式] 开始转写: {os.path.basename(audio_path)}")
-            t0 = time.time()
-            engine = self._engine
+        audio_duration = self._get_audio_duration(audio_path)
+        threshold = settings.ASR_DYNAMIC_CHUNK_THRESHOLD
+        use_fast_path = audio_duration <= threshold
 
-            def _worker():
-                """在子线程中运行同步生成器，将结果投入 asyncio.Queue"""
-                try:
-                    for chunk in engine.transcribe_stream(
+        if use_fast_path:
+            # ── 快速路径：短音频 asyncio.to_thread 直接执行 ──────────
+            async with self._lock:
+                logger.debug(
+                    f"[流式-快速] 开始转写: {os.path.basename(audio_path)} "
+                    f"({audio_duration:.1f}s ≤ {threshold}s)"
+                )
+                t0 = time.time()
+                engine = self._engine
+
+                def _fast_run():
+                    return list(engine.transcribe_stream(
                         audio_file=audio_path,
                         context=context or settings.DEFAULT_CONTEXT,
                         language=language or settings.DEFAULT_LANGUAGE,
                         temperature=temperature,
                         enable_aligner=enable_aligner,
-                    ):
-                        # 线程安全地将结果放入队列（超时保护防止事件循环阻塞时永久挂起）
-                        asyncio.run_coroutine_threadsafe(queue.put(chunk), loop).result(
-                            timeout=60
-                        )
-                except Exception as exc:
-                    # 将异常传递到异步侧
+                    ))
+
+                chunks = await asyncio.to_thread(_fast_run)
+
+                elapsed = time.time() - t0
+                logger.debug(
+                    f"[流式-快速] 转写完成: {elapsed:.2f}s | "
+                    f"{os.path.basename(audio_path)} | {len(chunks)} 个分片"
+                )
+
+                for chunk in chunks:
+                    yield chunk
+        else:
+            # ── 实时路径：长音频 Thread+Queue 管道 ─────────────────────
+            async with self._lock:
+                loop = asyncio.get_event_loop()
+                queue: asyncio.Queue = asyncio.Queue(maxsize=16)
+                logger.debug(
+                    f"[流式-实时] 开始转写: {os.path.basename(audio_path)} "
+                    f"({audio_duration:.1f}s > {threshold}s)"
+                )
+                t0 = time.time()
+                engine = self._engine
+
+                def _worker():
+                    """在子线程中运行同步生成器，将结果投入 asyncio.Queue"""
                     try:
-                        asyncio.run_coroutine_threadsafe(queue.put(exc), loop).result(
-                            timeout=10
-                        )
-                    except Exception:
-                        logger.error(f"[流式] 无法将异常投递到队列: {exc}")
-                finally:
-                    # 哨兵使用 fire-and-forget 方式投递，避免超时导致哨兵丢失
-                    # 使消费端永久阻塞在 queue.get()。只要事件循环最终恢复，
-                    # put_nowait 就能成功将哨兵放入队列。
-                    try:
-                        loop.call_soon_threadsafe(queue.put_nowait, _STREAM_SENTINEL)
-                    except Exception:
-                        logger.error("[流式] 无法发送流结束信号到队列")
+                        for chunk in engine.transcribe_stream(
+                            audio_file=audio_path,
+                            context=context or settings.DEFAULT_CONTEXT,
+                            language=language or settings.DEFAULT_LANGUAGE,
+                            temperature=temperature,
+                            enable_aligner=enable_aligner,
+                        ):
+                            asyncio.run_coroutine_threadsafe(
+                                queue.put(chunk), loop
+                            ).result(timeout=60)
+                    except Exception as exc:
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                queue.put(exc), loop
+                            ).result(timeout=10)
+                        except Exception:
+                            logger.error(f"[流式] 无法将异常投递到队列: {exc}")
+                    finally:
+                        try:
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait, _STREAM_SENTINEL
+                            )
+                        except Exception:
+                            logger.error("[流式] 无法发送流结束信号到队列")
 
-            worker_thread = threading.Thread(target=_worker, daemon=True)
-            worker_thread.start()
+                worker_thread = threading.Thread(target=_worker, daemon=True)
+                worker_thread.start()
 
-            # 异步消费队列
-            while True:
-                item = await queue.get()
+                while True:
+                    item = await queue.get()
+                    if item is _STREAM_SENTINEL:
+                        break
+                    if isinstance(item, Exception):
+                        worker_thread.join(timeout=60)
+                        raise item
+                    yield item
 
-                if item is _STREAM_SENTINEL:
-                    break
+                worker_thread.join(timeout=300)
 
-                if isinstance(item, Exception):
-                    worker_thread.join(timeout=60)
-                    raise item
-
-                yield item
-
-            worker_thread.join(timeout=300)  # 长音频可能需要较长时间完成
-
-            elapsed = time.time() - t0
-            logger.debug(
-                f"[流式] 转写完成: {elapsed:.2f}s | {os.path.basename(audio_path)}"
-            )
+                elapsed = time.time() - t0
+                logger.debug(
+                    f"[流式-实时] 转写完成: {elapsed:.2f}s | "
+                    f"{os.path.basename(audio_path)}"
+                )
 
     async def stream_transcribe_bytes(
         self,
