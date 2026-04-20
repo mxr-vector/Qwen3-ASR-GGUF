@@ -13,21 +13,31 @@ Transcribe 路由 — 音频转写 API 接口
   管理:
     GET  /asr/health                健康检查
 
-流式接口 SSE 事件格式:
-    data: {"type":"chunk","audio_id":"<hex>","segment":0,"text":"你好","start":0.0,"end":30.0}
-    data: {"type":"chunk","audio_id":"<hex>","segment":1,"text":"世界","start":30.0,"end":60.0,"srt":"..."}
-    data: {"type":"done","audio_id":"<hex>","duration":60.0}
-    data: [DONE]
-    注: audio_id 为每次请求自动生成的唯一标识 (UUID hex);
+流式接口 SSE 事件格式 (使用标准 SSE 协议字段):
+    id: <audio_id>
+    event: chunk
+    data: {"segment":0,"text":"你好","start":0.0,"end":30.0}
+
+    id: <audio_id>
+    event: chunk
+    data: {"segment":1,"text":"世界","start":30.0,"end":60.0,"srt":"..."}
+
+    id: <audio_id>
+    event: done
+    data: {"duration":60.0,"chunks_total":2,"chunks_empty":0}
+
+    注: audio_id 映射到 SSE 标准 id 字段;
+        type 映射到 SSE 标准 event 字段 (chunk/done/error);
         text 为空的分片不输出; srt/alignment 仅在对应参数启用且有对齐数据时出现。
 """
 
 import asyncio
 import json
-from typing import AsyncGenerator, List, Optional
+from collections.abc import AsyncIterable
+from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel, Field
 
 from core.config import args, settings
@@ -228,10 +238,10 @@ async def transcribe_batch(
     description=(
         "上传音频文件后，以 **Server-Sent Events (SSE)** 格式实时推送转写结果。"
         "每处理完一个音频分片（默认 30 秒），立即推送一条事件，无需等待整段音频处理完毕。"
-        "**事件类型**:"
-        "- `chunk`: 单个分片的转写文本（含分片时间轴、是否被 VAD 判定为静音"
-        "- `done`: 转写结束，包含完整文本、SRT、对齐时间戳及耗时统计"
-        "- `[DONE]`: 流结束标志（兼容 OpenAI 风格客户端"
+        "**SSE 字段映射**:"
+        "- `id`: 客户端传入的 audio_id，用于关联同一次转写的所有事件"
+        "- `event`: 事件类型 — chunk (分片转写) / done (转写结束) / error (异常)"
+        "- `data`: JSON 负载"
         "**适合场景**: 长音频转写、需要实时展示进度的 Web/App 应用。"
         "**服务端配置**: VAD 动态分片由音频时长自动触发（超过阈值时自动启用），"
         "VAD 阈值、分片长度、记忆片段数、"
@@ -239,11 +249,14 @@ async def transcribe_batch(
         "> 注意: 响应 Content-Type 为 `text/event-stream`，"
         "请勿通过 Swagger UI 直接测试（建议使用 curl 或前端 EventSource）。"
     ),
-    response_class=StreamingResponse,
+    response_class=EventSourceResponse,
 )
 async def transcribe_stream(
     file: UploadFile = File(..., description="音频文件"),
-    audio_id: str = Form(..., description="音频唯一标识，由客户端生成并传入，用于关联同一次转写的所有分片"),
+    audio_id: str = Form(
+        ...,
+        description="音频唯一标识，由客户端生成并传入，用于关联同一次转写的所有分片",
+    ),
     context: Optional[str] = Form(None, description="上下文提示词"),
     language: Optional[str] = Form(None, description="语言 (Chinese/English 等)"),
     temperature: float = Form(0.0, description="解码温度"),
@@ -252,156 +265,142 @@ async def transcribe_stream(
         False,
         description="是否启用对齐模型进行词级对齐 (在 chunk 事件中附带对齐时间戳)",
     ),
-):
+) -> AsyncIterable[ServerSentEvent]:
     content = await file.read()
     _check_file_size(content, file.filename or "")
 
     service = get_asr_service()
 
-    async def _event_generator() -> AsyncGenerator[str, None]:
-        """
-        生成 SSE 事件流。
-        - text 为空的分片不输出
-        - 每 8 秒发送 SSE 注释心跳 `: keepalive`，防止连接被代理/客户端超时断开
+    HEARTBEAT_INTERVAL = 8
+    _STREAM_END = object()
+    chunk_count = 0
+    empty_count = 0
+    heartbeat_count = 0
+    audio_duration = 0.0
 
-        重要: 使用 asyncio.wait (非 wait_for) 实现心跳，
-        确保超时时 **不取消** 底层迭代协程，避免工作线程仍在推理时
-        锁被意外释放导致并发崩溃。
-        """
-        HEARTBEAT_INTERVAL = 8  # 心跳间隔 (秒)，需低于代理最小超时
-        _STREAM_END = object()  # 流结束哨兵
-        chunk_count = 0
-        empty_count = 0
-        heartbeat_count = 0
-        audio_duration = 0.0
-
-        async def _safe_anext(aiter):
-            """安全获取下一个元素，用哨兵替代 StopAsyncIteration"""
-            try:
-                return await aiter.__anext__()
-            except StopAsyncIteration:
-                return _STREAM_END
-
-        stream = None
+    async def _safe_anext(aiter):
+        """安全获取下一个元素，用哨兵替代 StopAsyncIteration"""
         try:
-            logger.info(f"[流式] SSE 连接已建立: {file.filename}")
-            stream = service.stream_transcribe_bytes(
-                audio_bytes=content,
-                filename=file.filename or generate_unique_filename(suffix=".wav"),
-                context=context,
-                language=language,
-                temperature=temperature,
-                enable_aligner=enable_aligner,
-            )
+            return await aiter.__anext__()
+        except StopAsyncIteration:
+            return _STREAM_END
 
-            while True:
-                # 为下一次迭代创建 Task（不会被心跳超时取消）
-                next_task = asyncio.ensure_future(_safe_anext(stream))
+    stream = None
+    try:
+        logger.info(f"[流式] SSE 连接已建立: {file.filename}")
+        stream = service.stream_transcribe_bytes(
+            audio_bytes=content,
+            filename=file.filename or generate_unique_filename(suffix=".wav"),
+            context=context,
+            language=language,
+            temperature=temperature,
+            enable_aligner=enable_aligner,
+        )
 
-                # 等待推理完成，期间每隔 HEARTBEAT_INTERVAL 发送心跳
-                while not next_task.done():
-                    done, _ = await asyncio.wait(
-                        {next_task}, timeout=HEARTBEAT_INTERVAL
+        while True:
+            next_task = asyncio.ensure_future(_safe_anext(stream))
+
+            while not next_task.done():
+                done, _ = await asyncio.wait({next_task}, timeout=HEARTBEAT_INTERVAL)
+                if not done:
+                    heartbeat_count += 1
+                    logger.debug(
+                        f"[流式] 心跳 #{heartbeat_count} | "
+                        f"已完成 {chunk_count} 个分片"
                     )
-                    if not done:
-                        heartbeat_count += 1
-                        logger.debug(
-                            f"[流式] 心跳 #{heartbeat_count} | "
-                            f"已完成 {chunk_count} 个分片"
-                        )
-                        yield ": keepalive\n\n"
+                    yield ServerSentEvent(comment="keepalive")
 
-                result = next_task.result()
-                if result is _STREAM_END:
-                    break
+            result = next_task.result()
+            if result is _STREAM_END:
+                break
 
-                chunk = result
-                chunk_count += 1
+            chunk = result
+            chunk_count += 1
 
-                if chunk.is_last:
-                    stats = getattr(chunk, "_stats", {})
-                    audio_duration = stats.get("audio_duration", 0.0)
+            if chunk.is_last:
+                stats = getattr(chunk, "_stats", {})
+                audio_duration = stats.get("audio_duration", 0.0)
 
-                # 非空校验：text 为空（含 VAD 跳过）则跳过该分片输出
-                if not chunk.text or not chunk.text.strip():
-                    empty_count += 1
-                    continue
+            # 非空校验：text 为空（含 VAD 跳过）则跳过该分片输出
+            if not chunk.text or not chunk.text.strip():
+                empty_count += 1
+                continue
 
-                chunk_event = {
-                    "type": "chunk",
-                    "audio_id": audio_id,
-                    "segment": chunk.segment_idx,
-                    "text": chunk.text,
-                    "start": round(chunk.start_sec, 3),
-                    "end": round(chunk.end_sec, 3),
-                }
-
-                # 按标记在 chunk 中输出 SRT / 对齐数据
-                if enable_srt or enable_aligner:
-                    align_items = getattr(chunk, "_align_items", None)
-                    if enable_srt and align_items:
-                        chunk_event["srt"] = exporters.alignment_to_srt(align_items)
-                    if enable_aligner and align_items:
-                        chunk_event["alignment"] = [
-                            {
-                                "text": it.text,
-                                "start": round(it.start_time, 3),
-                                "end": round(it.end_time, 3),
-                            }
-                            for it in align_items
-                        ]
-
-                yield f"data: {json.dumps(chunk_event, ensure_ascii=False)}\n\n"
-
-            # ── done 事件：完成信号、音频时长与分片统计 ─────────────────
-            done_event = {
-                "type": "done",
-                "audio_id": audio_id,
-                "duration": round(audio_duration, 2),
-                "chunks_total": chunk_count,
-                "chunks_empty": empty_count,
+            chunk_data = {
+                "segment": chunk.segment_idx,
+                "text": chunk.text,
+                "start": round(chunk.start_sec, 3),
+                "end": round(chunk.end_sec, 3),
             }
-            yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
 
-        except asyncio.CancelledError:
-            logger.warning(
-                f"[流式] 转写任务被取消 | "
-                f"已完成 {chunk_count} 个分片, {heartbeat_count} 次心跳"
+            # 按标记在 chunk 中输出 SRT / 对齐数据
+            if enable_srt or enable_aligner:
+                align_items = getattr(chunk, "_align_items", None)
+                if enable_srt and align_items:
+                    chunk_data["srt"] = exporters.alignment_to_srt(align_items)
+                if enable_aligner and align_items:
+                    chunk_data["alignment"] = [
+                        {
+                            "text": it.text,
+                            "start": round(it.start_time, 3),
+                            "end": round(it.end_time, 3),
+                        }
+                        for it in align_items
+                    ]
+
+            yield ServerSentEvent(
+                raw_data=json.dumps(chunk_data, ensure_ascii=False),
+                event="chunk",
+                id=audio_id,
             )
-            yield f"data: {json.dumps({'type': 'error', 'audio_id': audio_id, 'message': '转写任务被取消'}, ensure_ascii=False)}\n\n"
 
-        except Exception as exc:
-            logger.error(
-                f"[流式] 转写异常: {exc} | "
-                f"已完成 {chunk_count} 个分片, {heartbeat_count} 次心跳",
-                exc_info=True,
-            )
-            yield f"data: {json.dumps({'type': 'error', 'audio_id': audio_id, 'message': str(exc)}, ensure_ascii=False)}\n\n"
+        # ── done 事件：完成信号、音频时长与分片统计 ─────────────────
+        yield ServerSentEvent(
+            raw_data=json.dumps(
+                {
+                    "duration": round(audio_duration, 2),
+                    "chunks_total": chunk_count,
+                    "chunks_empty": empty_count,
+                },
+                ensure_ascii=False,
+            ),
+            event="done",
+            id=audio_id,
+        )
 
-        finally:
-            # 显式关闭底层异步生成器，确保 asyncio.Lock 被释放
-            if stream is not None:
-                try:
-                    await stream.aclose()
-                except Exception:
-                    pass
-            logger.info(
-                f"[流式] SSE 连接关闭: {file.filename} | "
-                f"分片={chunk_count}, 空={empty_count}, 心跳={heartbeat_count}"
-            )
-            yield "data: [DONE]\n\n"
+    except asyncio.CancelledError:
+        logger.warning(
+            f"[流式] 转写任务被取消 | "
+            f"已完成 {chunk_count} 个分片, {heartbeat_count} 次心跳"
+        )
+        yield ServerSentEvent(
+            raw_data=json.dumps({"message": "转写任务被取消"}, ensure_ascii=False),
+            event="error",
+            id=audio_id,
+        )
 
-    return StreamingResponse(
-        _event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲，保证实时推送
-            "Connection": "keep-alive",
-            "Transfer-Encoding": "chunked",  # 显式声明分块传输
-            "X-Content-Type-Options": "nosniff",  # 防止浏览器嗅探中断 SSE
-        },
-    )
+    except Exception as exc:
+        logger.error(
+            f"[流式] 转写异常: {exc} | "
+            f"已完成 {chunk_count} 个分片, {heartbeat_count} 次心跳",
+            exc_info=True,
+        )
+        yield ServerSentEvent(
+            raw_data=json.dumps({"message": str(exc)}, ensure_ascii=False),
+            event="error",
+            id=audio_id,
+        )
+
+    finally:
+        if stream is not None:
+            try:
+                await stream.aclose()
+            except Exception:
+                pass
+        logger.info(
+            f"[流式] SSE 连接关闭: {file.filename} | "
+            f"分片={chunk_count}, 空={empty_count}, 心跳={heartbeat_count}"
+        )
 
 
 # ─── 健康检查 ─────────────────────────────────────────────────────────────────
