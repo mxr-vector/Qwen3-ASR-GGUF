@@ -230,8 +230,6 @@ async def transcribe_batch(
 
 
 # ─── 流式实时转写（SSE） ──────────────────────────────────────────────────────
-
-
 @router.post(
     "/stream",
     summary="单文件流式实时转写 (SSE)",
@@ -253,10 +251,6 @@ async def transcribe_batch(
 )
 async def transcribe_stream(
     file: UploadFile = File(..., description="音频文件"),
-    audio_id: str = Form(
-        ...,
-        description="音频唯一标识，由客户端生成并传入，用于关联同一次转写的所有分片",
-    ),
     context: Optional[str] = Form(None, description="上下文提示词"),
     language: Optional[str] = Form(None, description="语言 (Chinese/English 等)"),
     temperature: float = Form(0.0, description="解码温度"),
@@ -274,6 +268,7 @@ async def transcribe_stream(
     HEARTBEAT_INTERVAL = 8
     _STREAM_END = object()
     chunk_count = 0
+    event_id = 0
     empty_count = 0
     heartbeat_count = 0
     audio_duration = 0.0
@@ -348,13 +343,15 @@ async def transcribe_stream(
                         for it in align_items
                     ]
 
+            event_id += 1
             yield ServerSentEvent(
                 raw_data=json.dumps(chunk_data, ensure_ascii=False),
                 event="chunk",
-                id=audio_id,
+                id=str(event_id),
             )
 
         # ── done 事件：完成信号、音频时长与分片统计 ─────────────────
+        event_id += 1
         yield ServerSentEvent(
             raw_data=json.dumps(
                 {
@@ -365,7 +362,7 @@ async def transcribe_stream(
                 ensure_ascii=False,
             ),
             event="done",
-            id=audio_id,
+            id=str(event_id),
         )
 
     except asyncio.CancelledError:
@@ -373,10 +370,11 @@ async def transcribe_stream(
             f"[流式] 转写任务被取消 | "
             f"已完成 {chunk_count} 个分片, {heartbeat_count} 次心跳"
         )
+        event_id += 1
         yield ServerSentEvent(
             raw_data=json.dumps({"message": "转写任务被取消"}, ensure_ascii=False),
             event="error",
-            id=audio_id,
+            id=str(event_id),
         )
 
     except Exception as exc:
@@ -385,10 +383,11 @@ async def transcribe_stream(
             f"已完成 {chunk_count} 个分片, {heartbeat_count} 次心跳",
             exc_info=True,
         )
+        event_id += 1
         yield ServerSentEvent(
             raw_data=json.dumps({"message": str(exc)}, ensure_ascii=False),
             event="error",
-            id=audio_id,
+            id=str(event_id),
         )
 
     finally:
