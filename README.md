@@ -120,9 +120,14 @@ CPU 的速度：
 ### 1. 安装依赖
 
 ```bash
+# win/linux
 uv sync --extra cu128
 uv pip install transformers==4.57.6 modelscope accelerate fireredvad
 
+# macos
+uv sync
+uv pip install torch torchvision onnxruntime
+uv pip install transformers==4.57.6 modelscope accelerate fireredvad
 # 生产环境（默认）
 bash run.sh start
 

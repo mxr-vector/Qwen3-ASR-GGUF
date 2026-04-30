@@ -52,7 +52,7 @@ def optimize_and_check(input_path, output_path):
             print("  " + ", ".join(ops_list[i:i+5]))
 
 def main():
-    model_dir = ASR_MODEL_DIR
+    model_dir = Path(EXPORT_DIR)
 
     targets = [
         model_dir / "qwen3_asr_encoder_frontend.fp32.onnx",

@@ -2,6 +2,7 @@ import os
 import subprocess
 from pathlib import Path
 import platform
+from export_config import EXPORT_DIR
 
 # 设置路径
 PROJECT_ROOT = Path(__file__).parent.absolute()
@@ -11,7 +12,7 @@ QUANTIZE_NAME = (
 QUANTIZE_EXE = PROJECT_ROOT / "qwen_asr_gguf" / "inference" / "bin" / QUANTIZE_NAME
 
 QUANTIZE_TYPE = "q4_k"
-MODEL_DIR = PROJECT_ROOT / "models"
+MODEL_DIR = Path(EXPORT_DIR)
 INPUT_MODEL = MODEL_DIR / "qwen3_asr_llm.f16.gguf"
 OUTPUT_MODEL = MODEL_DIR / f"qwen3_asr_llm.{QUANTIZE_TYPE}.gguf"
 

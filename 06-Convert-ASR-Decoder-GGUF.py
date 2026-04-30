@@ -2,12 +2,13 @@ import sys
 import os
 import json
 from pathlib import Path
+from export_config import EXPORT_DIR
 
 # 1. 路径设置
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 CONVERT_LIB_DIR = os.path.join(PROJECT_ROOT, "qwen_asr_gguf", 'export')
-MODEL_DIR = os.path.join(PROJECT_ROOT, "models", "asr_decoder_hf")
-OUTPUT_GGUF = os.path.join(PROJECT_ROOT, "models", "qwen3_asr_llm.gguf")
+MODEL_DIR = os.path.join(EXPORT_DIR, "asr_decoder_hf")
+OUTPUT_GGUF = os.path.join(EXPORT_DIR, "qwen3_asr_llm.gguf")
 
 # 确保可以导入转换库
 if CONVERT_LIB_DIR not in sys.path:
@@ -64,7 +65,8 @@ def main():
     ]
 
     for out_type, suffix in tasks:
-        output_file = os.path.join(PROJECT_ROOT, "model", f"qwen3_asr_llm.{suffix}.gguf")
+        os.makedirs(EXPORT_DIR, exist_ok=True)
+        output_file = os.path.join(EXPORT_DIR, f"qwen3_asr_llm.{suffix}.gguf")
         print(f"\n--- 正在转换 {out_type} 格式 -> {output_file} ---")
 
         # 3. 准备转换器参数
