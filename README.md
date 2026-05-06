@@ -16,6 +16,9 @@ Qwen3-ASR 0.6B 与 Qwen3-ASR 1.7B 以及 Qwen3-ForceAligner 0.6B 均可用，
 - ✅ **字幕输出** - ForceAligner 对齐字级时间戳，输出 SRT/JSON 格式
 - ✅ **上下文增强** - 可提供上下文信息，提升准确率
 
+web访问 http://127.0.0.1:8002/
+![web-demo](/assets/web.png)
+
 ## 性能表现
 
 1.7B 在 RTX 5050 笔记本上的实测数据（50秒中文音频）：
