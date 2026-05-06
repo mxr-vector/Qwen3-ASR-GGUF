@@ -24,7 +24,11 @@ class TokenAuthMiddleware:
         path = scope.get("path", "/")
 
         # 跳过无需认证的路径
-        if path in EXCLUDE_PATHS or path.startswith("/public") or path.startswith("/static/"):
+        if (
+            path in EXCLUDE_PATHS
+            or path.startswith("/public")
+            or path.startswith("/static/")
+        ):
             await self.app(scope, receive, send)
             return
 
