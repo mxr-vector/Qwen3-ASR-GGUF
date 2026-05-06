@@ -32,8 +32,9 @@ SUPPORTED_LANGUAGES: List[str] = [
     "Greek",
     "Romanian",
     "Hungarian",
-    "Macedonian"
+    "Macedonian",
 ]
+
 
 def normalize_language_name(language: str) -> str:
     """
@@ -47,12 +48,15 @@ def normalize_language_name(language: str) -> str:
         raise ValueError("language is empty")
     return s[:1].upper() + s[1:].lower()
 
+
 def validate_language(language: str) -> None:
     """
     验证语言是否在支持列表中。
     """
     if language not in SUPPORTED_LANGUAGES:
-        raise ValueError(f"Unsupported language: {language}. Supported: {SUPPORTED_LANGUAGES}")
+        raise ValueError(
+            f"Unsupported language: {language}. Supported: {SUPPORTED_LANGUAGES}"
+        )
 
 
 def detect_and_fix_repetitions(text: str, threshold: int = 4) -> str:
@@ -70,6 +74,7 @@ def detect_and_fix_repetitions(text: str, threshold: int = 4) -> str:
     Returns:
         去重后的文本
     """
+
     def fix_char_repeats(s, thresh):
         res = []
         i = 0
@@ -82,9 +87,9 @@ def detect_and_fix_repetitions(text: str, threshold: int = 4) -> str:
                 res.append(s[i])
                 i += count
             else:
-                res.append(s[i:i + count])
+                res.append(s[i : i + count])
                 i += count
-        return ''.join(res)
+        return "".join(res)
 
     def fix_pattern_repeats(s, thresh, max_len=20):
         n = len(s)
@@ -101,17 +106,19 @@ def detect_and_fix_repetitions(text: str, threshold: int = 4) -> str:
                 if i + k * thresh > n:
                     break
 
-                pattern = s[i:i + k]
+                pattern = s[i : i + k]
                 valid = True
                 for rep in range(1, thresh):
                     start_idx = i + rep * k
-                    if s[start_idx:start_idx + k] != pattern:
+                    if s[start_idx : start_idx + k] != pattern:
                         valid = False
                         break
 
                 if valid:
                     end_index = i + thresh * k
-                    while end_index + k <= n and s[end_index:end_index + k] == pattern:
+                    while (
+                        end_index + k <= n and s[end_index : end_index + k] == pattern
+                    ):
                         end_index += k
                     result.append(pattern)
                     result.append(fix_pattern_repeats(s[end_index:], thresh, max_len))
@@ -127,14 +134,16 @@ def detect_and_fix_repetitions(text: str, threshold: int = 4) -> str:
 
         if not found:
             result.append(s[i:])
-        return ''.join(result)
+        return "".join(result)
 
     text = fix_char_repeats(text, threshold)
     text = fix_pattern_repeats(text, threshold)
     return text
 
 
-def is_hallucination(text: str, min_length: int = 4, max_unique_ratio: float = 0.1) -> bool:
+def is_hallucination(
+    text: str, min_length: int = 4, max_unique_ratio: float = 0.1
+) -> bool:
     """
     检测 ASR 输出文本是否为幻觉（单字/双字高频重复的无意义输出）。
 
@@ -161,7 +170,8 @@ def is_hallucination(text: str, min_length: int = 4, max_unique_ratio: float = 0
 
     # 去除空格和常见标点
     import re
-    cleaned = re.sub(r'[\s，。、！？,.!?\-—]+', '', text)
+
+    cleaned = re.sub(r"[\s，。、！？,.!?\-—]+", "", text)
 
     if len(cleaned) < min_length:
         return False
@@ -174,9 +184,41 @@ def is_hallucination(text: str, min_length: int = 4, max_unique_ratio: float = 0
 
     # 规则 2：某个字符占比 ≥ 90%（如 "三洞洞洞洞洞洞洞洞洞"，"洞"占 90%）
     from collections import Counter
+
     counts = Counter(cleaned)
     most_common_count = counts.most_common(1)[0][1]
     if most_common_count / len(cleaned) >= (1 - max_unique_ratio):
         return True
 
     return False
+
+
+def trim_overlap_prefix(new_text: str, prefix_text: str, min_overlap: int = 2) -> tuple:
+    """检测并裁剪新文本开头与前缀文本尾部的重叠部分。
+
+    用于流式 ASR 分片拼接时，去除 LLM 因看到 prefix_text 上下文而复述的重复内容。
+
+    原理：从 prefix_text 的尾部取不同长度的子串，与 new_text 的开头匹配，
+    找到最长的精确重叠后裁剪。
+
+    Args:
+        new_text: LLM 刚生成的当前分片文本
+        prefix_text: 传入 LLM 的前缀上下文文本（前面分片累积的文本）
+        min_overlap: 最小重叠长度（低于此值不裁剪，避免单字误裁）
+
+    Returns:
+        (trimmed_text, trimmed_len): 裁剪后文本和被裁剪的字符数
+    """
+    if not prefix_text or not new_text:
+        return new_text, 0
+
+    # 检查范围：prefix 末尾和 new_text 开头取较短者
+    max_check = min(len(prefix_text), len(new_text))
+
+    # 从长到短寻找最长精确匹配
+    for overlap_len in range(max_check, min_overlap - 1, -1):
+        if prefix_text[-overlap_len:] == new_text[:overlap_len]:
+            trimmed = new_text[overlap_len:]
+            return trimmed, overlap_len
+
+    return new_text, 0

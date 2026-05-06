@@ -25,6 +25,7 @@ from .utils import (
     validate_language,
     detect_and_fix_repetitions,
     is_hallucination,
+    trim_overlap_prefix,
 )
 from .encoder import QwenAudioEncoder
 
@@ -864,9 +865,7 @@ class QwenASREngine:
 
                 # 编码后再次检查客户端状态（decode 是最耗时的步骤）
                 if cancel_event and cancel_event.is_set():
-                    logger.info(
-                        f"[ASR] 客户端已断开，停止转写 (分片 {i} 编码完成后)"
-                    )
+                    logger.info(f"[ASR] 客户端已断开，停止转写 (分片 {i} 编码完成后)")
                     return
 
                 # ── Step 3: LLM 解码 ─────────────────────────────────────
@@ -917,9 +916,7 @@ class QwenASREngine:
 
                 # 解码过程中客户端断开，立即停止
                 if res.is_cancelled:
-                    logger.info(
-                        f"[ASR] 客户端已断开，停止转写 (分片 {i} 解码中止)"
-                    )
+                    logger.info(f"[ASR] 客户端已断开，停止转写 (分片 {i} 解码中止)")
                     return
 
                 # ── 幻觉过滤 ─────────────────────────────────────────────
@@ -949,6 +946,16 @@ class QwenASREngine:
                         setattr(chunk_result, "_align_items", [])
                     yield chunk_result
                     continue
+
+                # ── 跨分片去重：裁剪 LLM 输出中复述的前缀内容 ──────────
+                if prefix_text:
+                    res.text, trimmed_len = trim_overlap_prefix(
+                        res.text, prefix_text, min_overlap=2
+                    )
+                    if trimmed_len > 0 and self.verbose:
+                        logger.info(
+                            f"  [去重] 分片 #{i:02d} 裁剪重叠 {trimmed_len} 字符"
+                        )
 
                 # 更新记忆
                 if vad_mode:
