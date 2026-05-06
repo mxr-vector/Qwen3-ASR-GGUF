@@ -171,6 +171,7 @@ class ASREngineConfig:
 
     llm_fn: str = "qwen3_asr_llm.f16.gguf"
     use_gpu: bool = False
+    n_gpu_layers: int = -1  # -1=自动(use_gpu时99,否则0), 0=纯CPU, 99=全部offload
     n_ctx: int = 2048  # 对于 ASR Decoder，每秒音频+文字，约占 20 个 token
     chunk_size: float = 30.0  # 每个分片时长 (秒)；30s 在精度与流式延迟间取得平衡
     memory_num: int = 1  # 保留前 N 个分片的记忆作为上下文

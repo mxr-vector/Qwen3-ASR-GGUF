@@ -145,6 +145,7 @@ class QwenAudioEncoder:
                 "CUDAExecutionProvider",
                 "ROCMExecutionProvider",
                 "TensorrtExecutionProvider",
+                "CoreMLExecutionProvider",
                 "DmlExecutionProvider",
             ]
             selected_provider = "CPUExecutionProvider"

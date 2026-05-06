@@ -1,7 +1,20 @@
 import argparse
-import torch
 import os
 import yaml
+
+
+def _detect_gpu_available():
+    """跨平台 GPU 可用性检测（支持 CUDA 和 macOS Metal）"""
+    import platform
+    # macOS: llama.cpp 原生支持 Metal GPU 加速
+    if platform.system() == "Darwin":
+        return True
+    # Linux/Windows: 检测 CUDA
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
 
 
 def _str2bool(value):
@@ -26,8 +39,14 @@ def __build_parser_args() -> argparse.Namespace:
     parser.add_argument(
         "--use_gpu",
         type=_str2bool,
-        default=torch.cuda.is_available(),
+        default=_detect_gpu_available(),
         help="是否使用GPU预测",
+    )
+    parser.add_argument(
+        "--n_gpu_layers",
+        type=int,
+        default=-1,
+        help="GPU offload 层数。-1=自动（use_gpu=True则99，否则0），0=纯CPU，99=全部offload到GPU",
     )
     parser.add_argument(
         "--web_secret_key", type=str, default="qwen3-asr-token", help="接口请求秘钥"

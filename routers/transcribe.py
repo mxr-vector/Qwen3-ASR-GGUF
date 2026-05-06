@@ -286,27 +286,29 @@ async def transcribe_realtime_ws(
     ),
 ):
     """
-    WebSocket 实时麦克风录音转写接口。
+    WebSocket 实时麦克风录音转写接口（并行架构）。
+
+    音频接收与 ASR 推理并行执行，录音期间无阻塞延迟。
 
     **音频输入协议**:
     - `is_wav=false` (默认): 客户端发送原始 PCM int16 单声道字节，采样率由 `sample_rate` 指定。
     - `is_wav=true`:  客户端发送完整 WAV 格式块，soundfile 自动解析采样率与声道数。
 
     **控制消息** (文本帧):
-    - `"stop"` — 立即转写剩余缓冲区并关闭连接。
+    - `"stop"` — 转写剩余缓冲区并关闭连接。
+    - `"flush"` — 立即转写当前缓冲区（客户端 VAD 静音检测触发）。
 
-    **服务端响应** (JSON 文本帧，SSE 标准结构):
+    **服务端响应** (JSON 文本帧):
     - `{"id":"1","event":"ready","data":{}}` — 连接就绪确认
-    - `{"id":"2","event":"chunk","data":{"segment":N,"text":"...","start":0.0,"end":5.0,"text_itn":"..."}}` — 每个转写分片
+    - `{"id":"2","event":"chunk","data":{"segment":N,"text":"...","start":0.0,"end":5.0,"text_itn":"..."}}` — 转写分片
     - `{"id":"3","event":"done","data":{"duration":30.0,"chunks_total":3,"chunks_empty":0}}` — 转写结束
     - `{"id":"4","event":"error","data":{"message":"..."}}` — 错误
     """
     await websocket.accept()
     service = get_asr_service()
 
-    # 音频缓冲区（float32 numpy 数组）
-    buffer: np.ndarray = np.empty(0, dtype=np.float32)
-    buf_samplerate: int = sample_rate  # 由第一个 WAV 块或参数决定
+    # ── 共享状态 ──────────────────────────────────────────────────────
+    buf_samplerate: int = sample_rate
     chunk_samples = int(chunk_seconds * sample_rate)
     segment_idx = 0
     chunk_count = 0
@@ -314,42 +316,191 @@ async def transcribe_realtime_ws(
     audio_seconds_total = 0.0
     event_id = 0
 
-    async def _transcribe_buffer(
-        buf: np.ndarray, sr: int, seg_idx: int
+    # 并行通信
+    transcribe_queue: asyncio.Queue = asyncio.Queue()
+    ws_send_lock = asyncio.Lock()
+    stop_event = asyncio.Event()
+
+    async def _ws_send(data: dict):
+        """线程安全的 WebSocket 发送"""
+        async with ws_send_lock:
+            await websocket.send_text(json.dumps(data, ensure_ascii=False))
+
+    async def _do_transcribe(
+        buf: np.ndarray, sr: int, seg_idx: int, end_seconds: float
     ) -> Optional[dict]:
-        """将缓冲区写成 WAV 临时文件，流式转写并聚合文本，返回结果 dict 或 None"""
+        """直接对 numpy 缓冲执行转写（零文件 I/O）"""
         if buf.size == 0:
             return None
-        tmp_path = save_audio_tmp(buf, sr)
-        try:
-            texts = []
-            async for chunk in service.stream_transcribe(
-                audio_path=tmp_path,
-                context=context,
-                language=language,
-                temperature=temperature,
-                enable_aligner=False,
-            ):
-                if chunk.text and chunk.text.strip():
-                    texts.append(chunk.text.strip())
-            text = "".join(texts)
-            if not text:
-                return None
-            dur = len(buf) / sr
-            return {
-                "segment": seg_idx,
-                "text": text,
-                "text_itn": itn(text) if text else "",
-                "start": round(audio_seconds_total - dur, 3),
-                "end": round(audio_seconds_total, 3),
-            }
-        finally:
-            try:
-                if tmp_path and os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
+        text = await service.transcribe_buffer(
+            audio=buf,
+            context=context,
+            language=language,
+            temperature=temperature,
+            lock_timeout=8.0,
+        )
+        if not text:
+            return None
+        dur = len(buf) / sr
+        return {
+            "segment": seg_idx,
+            "text": text,
+            "text_itn": itn(text) if text else "",
+            "start": round(end_seconds - dur, 3),
+            "end": round(end_seconds, 3),
+        }
 
+    # ── 转写工作协程（消费者） ───────────────────────────────────────
+    async def _transcription_worker():
+        """从队列中取出音频片段并转写，结果立即推送客户端。
+
+        核心优化：当推理速度慢于实时音频时，队列会堆积多个片段。
+        Worker 每次取任务时会合并所有待处理片段为一个大段，一次性转写，
+        避免“每段 3s 音频却要 5s 推理”导致的延迟雪球。
+        """
+        nonlocal chunk_count, empty_count, event_id
+
+        while True:
+            item = await transcribe_queue.get()
+            if item is None:
+                # 收到终止信号
+                break
+
+            # ── 合并队列中所有堆积的片段 ──────────────────────
+            buf, sr, seg_idx, end_sec = item
+            segments_merged = 1
+
+            while not transcribe_queue.empty():
+                try:
+                    next_item = transcribe_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if next_item is None:
+                    # 终止哨兵放回去
+                    await transcribe_queue.put(None)
+                    break
+                next_buf, next_sr, next_seg_idx, next_end_sec = next_item
+                buf = np.concatenate([buf, next_buf])
+                seg_idx = next_seg_idx
+                end_sec = next_end_sec
+                segments_merged += 1
+
+            if segments_merged > 1:
+                logger.info(
+                    f"[WS录音] 合并 {segments_merged} 个片段 "
+                    f"({buf.size / sr:.1f}s) 一次性转写"
+                )
+
+            try:
+                import time as _time
+                _t0 = _time.time()
+                res = await _do_transcribe(buf, sr, seg_idx, end_sec)
+                _elapsed_ms = (_time.time() - _t0) * 1000
+                if res:
+                    chunk_count += 1
+                    event_id += 1
+                    await _ws_send(
+                        {"id": str(event_id), "event": "chunk", "data": res}
+                    )
+                    logger.info(
+                        "[WS录音] 片段转写完成 | seg=%d | %.2fs音频 | 耗时=%.0fms | text=%s",
+                        seg_idx, buf.size / sr, _elapsed_ms, res["text"][:30]
+                    )
+                else:
+                    empty_count += 1
+            except Exception as exc:
+                logger.error(f"[WS录音] 转写worker异常: {exc}", exc_info=True)
+                empty_count += 1
+
+    # ── 音频接收协程（生产者） ───────────────────────────────────────
+    async def _audio_receiver():
+        """持续接收 WebSocket 消息，积累音频并投递到转写队列"""
+        nonlocal buf_samplerate, chunk_samples, segment_idx, audio_seconds_total, event_id
+
+        buffer: np.ndarray = np.empty(0, dtype=np.float32)
+        min_flush_samples = int(0.3 * buf_samplerate)
+
+        while True:
+            try:
+                message = await websocket.receive()
+            except WebSocketDisconnect:
+                # 客户端断开，处理剩余
+                if buffer.size >= min_flush_samples:
+                    audio_seconds_total += len(buffer) / buf_samplerate
+                    await transcribe_queue.put(
+                        (buffer.copy(), buf_samplerate, segment_idx, audio_seconds_total)
+                    )
+                    segment_idx += 1
+                break
+
+            # ── 文本控制帧 ────────────────────────────────────────────
+            if message["type"] == "websocket.receive" and message.get("text"):
+                cmd = message["text"].strip().lower()
+
+                if cmd == "stop":
+                    logger.info("[WS录音] 收到 stop 指令")
+                    if buffer.size >= min_flush_samples:
+                        audio_seconds_total += len(buffer) / buf_samplerate
+                        await transcribe_queue.put(
+                            (buffer.copy(), buf_samplerate, segment_idx, audio_seconds_total)
+                        )
+                        segment_idx += 1
+                        buffer = np.empty(0, dtype=np.float32)
+                    stop_event.set()
+                    break
+
+                elif cmd == "flush":
+                    if buffer.size >= min_flush_samples:
+                        logger.debug(
+                            f"[WS录音] flush → 队列 | {buffer.size / buf_samplerate:.2f}s"
+                        )
+                        audio_seconds_total += len(buffer) / buf_samplerate
+                        await transcribe_queue.put(
+                            (buffer.copy(), buf_samplerate, segment_idx, audio_seconds_total)
+                        )
+                        segment_idx += 1
+                        buffer = np.empty(0, dtype=np.float32)
+                continue
+
+            # ── 二进制音频帧 ──────────────────────────────────────────
+            if message["type"] == "websocket.receive" and message.get("bytes"):
+                raw = message["bytes"]
+                if not raw:
+                    continue
+
+                if is_wav:
+                    try:
+                        new_samples, detected_sr = read_audio_bytes(raw)
+                        buf_samplerate = detected_sr
+                        chunk_samples = int(chunk_seconds * buf_samplerate)
+                        min_flush_samples = int(0.3 * buf_samplerate)
+                    except Exception as exc:
+                        logger.warning(f"[WS录音] soundfile 解析失败: {exc}")
+                        event_id += 1
+                        await _ws_send(
+                            {
+                                "id": str(event_id),
+                                "event": "error",
+                                "data": {"message": f"音频解析失败: {exc}"},
+                            }
+                        )
+                        continue
+                else:
+                    new_samples = pcm16_to_float32(raw)
+
+                buffer = np.concatenate([buffer, new_samples])
+
+                # 按 chunk_samples 分片投递（兜底机制）
+                while buffer.size >= chunk_samples:
+                    seg_buf = buffer[:chunk_samples]
+                    buffer = buffer[chunk_samples:]
+                    audio_seconds_total += chunk_samples / buf_samplerate
+                    await transcribe_queue.put(
+                        (seg_buf, buf_samplerate, segment_idx, audio_seconds_total)
+                    )
+                    segment_idx += 1
+
+    # ── 主逻辑：并行启动接收与转写 ────────────────────────────────────
     try:
         event_id += 1
         await websocket.send_text(
@@ -358,114 +509,34 @@ async def transcribe_realtime_ws(
             )
         )
         logger.info(
-            f"[WS录音] 连接就绪 | sample_rate={sample_rate} chunk_seconds={chunk_seconds} is_wav={is_wav}"
+            f"[WS录音] 连接就绪 | sample_rate={sample_rate} "
+            f"chunk_seconds={chunk_seconds} is_wav={is_wav}"
         )
 
-        while True:
-            try:
-                message = await websocket.receive()
-            except WebSocketDisconnect:
-                break
+        # 启动转写 worker
+        worker_task = asyncio.create_task(_transcription_worker())
 
-            # ── 文本控制帧 ──────────────────────────────────────────────
-            if message["type"] == "websocket.receive" and message.get("text"):
-                cmd = message["text"].strip().lower()
-                if cmd == "stop":
-                    logger.info("[WS录音] 收到 stop 指令，处理剩余缓冲区")
-                    if buffer.size > 0:
-                        audio_seconds_total += len(buffer) / buf_samplerate
-                        res = await _transcribe_buffer(
-                            buffer, buf_samplerate, segment_idx
-                        )
-                        if res:
-                            chunk_count += 1
-                            segment_idx += 1
-                            event_id += 1
-                            await websocket.send_text(
-                                json.dumps(
-                                    {
-                                        "id": str(event_id),
-                                        "event": "chunk",
-                                        "data": res,
-                                    },
-                                    ensure_ascii=False,
-                                )
-                            )
-                        else:
-                            empty_count += 1
-                        buffer = np.empty(0, dtype=np.float32)
-                    event_id += 1
-                    await websocket.send_text(
-                        json.dumps(
-                            {
-                                "id": str(event_id),
-                                "event": "done",
-                                "data": {
-                                    "duration": round(audio_seconds_total, 2),
-                                    "chunks_total": chunk_count,
-                                    "chunks_empty": empty_count,
-                                },
-                            },
-                            ensure_ascii=False,
-                        )
-                    )
-                    break
-                continue
+        # 运行音频接收（阻塞直到 stop/disconnect）
+        await _audio_receiver()
 
-            # ── 二进制音频帧 ────────────────────────────────────────────
-            if message["type"] == "websocket.receive" and message.get("bytes"):
-                raw = message["bytes"]
-                if not raw:
-                    continue
+        # 接收结束，发送终止信号给 worker 并等待其处理完剩余队列
+        await transcribe_queue.put(None)
+        await worker_task
 
-                if is_wav:
-                    # soundfile 解析 WAV/FLAC/OGG 块
-                    try:
-                        new_samples, detected_sr = read_audio_bytes(raw)
-                        buf_samplerate = detected_sr
-                        chunk_samples = int(chunk_seconds * buf_samplerate)
-                    except Exception as exc:
-                        logger.warning(f"[WS录音] soundfile 解析失败: {exc}")
-                        event_id += 1
-                        await websocket.send_text(
-                            json.dumps(
-                                {
-                                    "id": str(event_id),
-                                    "event": "error",
-                                    "data": {"message": f"音频解析失败: {exc}"},
-                                },
-                                ensure_ascii=False,
-                            )
-                        )
-                        continue
-                else:
-                    # 原始 PCM int16 → float32
-                    new_samples = pcm16_to_float32(raw)
-
-                buffer = np.concatenate([buffer, new_samples])
-
-                # 积累够 chunk_samples 就触发转写
-                while buffer.size >= chunk_samples:
-                    seg_buf = buffer[:chunk_samples]
-                    buffer = buffer[chunk_samples:]
-                    dur = chunk_samples / buf_samplerate
-                    audio_seconds_total += dur
-
-                    res = await _transcribe_buffer(
-                        seg_buf, buf_samplerate, segment_idx
-                    )  # noqa: E501
-                    segment_idx += 1
-                    if res:
-                        chunk_count += 1
-                        event_id += 1
-                        await websocket.send_text(
-                            json.dumps(
-                                {"id": str(event_id), "event": "chunk", "data": res},
-                                ensure_ascii=False,
-                            )
-                        )
-                    else:
-                        empty_count += 1
+        # 发送 done 事件
+        if stop_event.is_set():
+            event_id += 1
+            await _ws_send(
+                {
+                    "id": str(event_id),
+                    "event": "done",
+                    "data": {
+                        "duration": round(audio_seconds_total, 2),
+                        "chunks_total": chunk_count,
+                        "chunks_empty": empty_count,
+                    },
+                }
+            )
 
     except WebSocketDisconnect:
         logger.info("[WS录音] 客户端断开连接")
@@ -473,15 +544,12 @@ async def transcribe_realtime_ws(
         logger.error(f"[WS录音] 异常: {exc}", exc_info=True)
         try:
             event_id += 1
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "id": str(event_id),
-                        "event": "error",
-                        "data": {"message": str(exc)},
-                    },
-                    ensure_ascii=False,
-                )
+            await _ws_send(
+                {
+                    "id": str(event_id),
+                    "event": "error",
+                    "data": {"message": str(exc)},
+                }
             )
         except Exception:
             pass

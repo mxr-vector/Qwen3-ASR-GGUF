@@ -15,6 +15,8 @@ import time
 import uuid
 from typing import AsyncGenerator, Optional
 
+import numpy as np
+
 from core.logger import logger
 from core.config import settings, args
 from qwen_asr_gguf.inference import (
@@ -52,14 +54,30 @@ class ASRService:
         self._engine = QwenASREngine(config=config)
 
         elapsed = time.time() - t0
+
+        # 计算最终生效的 n_gpu_layers
+        if config.n_gpu_layers >= 0:
+            effective_gpu_layers = config.n_gpu_layers
+        else:
+            effective_gpu_layers = 99 if config.use_gpu else 0
+
+        import platform
+        platform_info = f"{platform.system()} {platform.machine()}"
+
         logger.info(
             "Qwen3-ASR 引擎初始化完成，耗时 %.2fs",
             elapsed,
         )
-        logger.debug(
-            "引擎配置 - GPU: %s | chunk_size: %.1f | memory_num: %s | "
-            "dynamic_chunk_threshold: %.1f | vad_threshold: %.2f | aligner: %s",
+        logger.info(
+            "GPU 配置 - use_gpu: %s | n_gpu_layers: %d (配置值: %d) | 平台: %s",
             config.use_gpu,
+            effective_gpu_layers,
+            config.n_gpu_layers,
+            platform_info,
+        )
+        logger.debug(
+            "引擎配置 - chunk_size: %.1f | memory_num: %s | "
+            "dynamic_chunk_threshold: %.1f | vad_threshold: %.2f | aligner: %s",
             config.chunk_size,
             config.memory_num,
             config.dynamic_chunk_threshold,
@@ -92,6 +110,7 @@ class ASRService:
         return ASREngineConfig(
             model_dir=settings.MODEL_DIR,
             use_gpu=args.use_gpu,
+            n_gpu_layers=args.n_gpu_layers,
             chunk_size=settings.ASR_CHUNK_SIZE,
             memory_num=settings.ASR_MEMORY_NUM,
             align_config=align_config,
@@ -355,6 +374,108 @@ class ASRService:
                 yield chunk
         finally:
             self._remove_tmp(tmp_path)
+
+    async def transcribe_buffer(
+        self,
+        audio: "np.ndarray",
+        context: Optional[str] = None,
+        language: Optional[str] = None,
+        temperature: float = 0.4,
+        lock_timeout: float = 8.0,
+    ) -> Optional[str]:
+        """
+        直接对 numpy 音频缓冲执行转写（零文件 I/O），专为 WS 实时场景设计。
+
+        与 stream_transcribe 的区别:
+          - 输入为 numpy float32 数组（16kHz 单声道），不写入/读取临时文件
+          - 带超时的锁获取，避免被长 SSE 任务永久阻塞
+          - 内部禁用 VAD（客户端已做 VAD 分片），跳过不必要的分析
+          - 锁超时时返回 None，调用方静默跳过
+
+        Args:
+            audio: 16kHz 单声道 float32 音频数据
+            context: 上下文提示词
+            language: 语言 (Chinese/English 等)
+            temperature: 解码温度
+            lock_timeout: 等待引擎锁的最大秒数，超时返回 None
+        """
+        if not self._engine:
+            raise RuntimeError("ASR 引擎未初始化")
+
+        audio_duration = len(audio) / 16000
+        t_start = time.time()
+
+        # 带超时的锁获取，避免被 SSE 长任务永久阻塞
+        try:
+            await asyncio.wait_for(self._lock.acquire(), timeout=lock_timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[WS转写] 等待引擎锁超时 (%.1fs)，跳过本段音频 (%.2fs)",
+                lock_timeout,
+                audio_duration,
+            )
+            return None
+
+        t_lock_acquired = time.time()
+        lock_wait_ms = (t_lock_acquired - t_start) * 1000
+
+        cancel_event = threading.Event()
+        result_holder: dict = {}
+        done_event = threading.Event()
+        engine = self._engine
+
+        def _run():
+            try:
+                texts = []
+                for chunk in engine.asr_stream(
+                    audio=audio,
+                    context=context or settings.DEFAULT_CONTEXT,
+                    language=language or settings.DEFAULT_LANGUAGE,
+                    chunk_size_sec=1.0,
+                    memory_chunks=1,
+                    temperature=temperature,
+                    disable_vad=True,
+                    cancel_event=cancel_event,
+                ):
+                    if chunk.text and chunk.text.strip():
+                        texts.append(chunk.text.strip())
+                result_holder["text"] = "".join(texts)
+            except Exception as e:
+                result_holder["exc"] = e
+            finally:
+                done_event.set()
+
+        worker_thread = threading.Thread(target=_run, daemon=True)
+        worker_thread.start()
+
+        try:
+            while not done_event.is_set():
+                await asyncio.sleep(0.05)
+
+            t_infer_done = time.time()
+            infer_ms = (t_infer_done - t_lock_acquired) * 1000
+
+            if "exc" in result_holder:
+                raise result_holder["exc"]
+
+            text = result_holder.get("text", "").strip()
+
+            total_ms = (time.time() - t_start) * 1000
+            logger.info(
+                "[WS转写] 完成 | 音频=%.2fs | 锁等待=%.0fms | 推理=%.0fms | 总耗时=%.0fms",
+                audio_duration, lock_wait_ms, infer_ms, total_ms,
+            )
+
+            return text if text else None
+        finally:
+            cancel_event.set()
+            if worker_thread.is_alive():
+                await asyncio.to_thread(worker_thread.join, 10)
+                if worker_thread.is_alive():
+                    logger.warning(
+                        "[WS转写] 工作线程在 10s 内未终止，可能仍在占用引擎资源"
+                    )
+            self._lock.release()
 
     # ──────────────────────────────────────────────────────────────────
     # 内部工具
