@@ -62,9 +62,5 @@ ENV PATH="/workspace/.venv/bin:${PATH}"
 # 暴露 FastAPI 运行端口
 EXPOSE 8002
 
-# 容器启动命令 — 使用 serve 前台模式
-# serve 模式通过 exec 让 uvicorn 成为 PID 1，确保:
-#   1. SIGTERM 信号能正确传递，实现优雅关闭
-#   2. 日志输出到 stdout/stderr，可通过 docker logs 查看
-#   3. SSE 长连接不会因进程管理问题而中断
-CMD ["bash", "run.sh", "serve"]
+# 容器启动命令 — 使用 start 前台模式
+CMD ["bash", "run.sh", "start"]

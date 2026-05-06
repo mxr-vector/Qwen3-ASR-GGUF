@@ -41,6 +41,7 @@ class DecodeResult:
     n_prefill: int = 0  # 预填充 token 数
     n_generate: int = 0  # 生成 token 数
     is_aborted: bool = False  # 是否因重复或其他原因熔断中断
+    is_cancelled: bool = False  # 是否因客户端断开而中止
 
 
 @dataclass(frozen=True)

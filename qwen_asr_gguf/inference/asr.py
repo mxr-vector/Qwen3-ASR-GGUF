@@ -4,6 +4,7 @@ import time
 import re
 import codecs
 import dataclasses
+import threading
 import numpy as np
 from pathlib import Path
 from collections import deque
@@ -227,6 +228,7 @@ class QwenASREngine:
         is_last_chunk: bool = False,
         temperature: float = 0.0,
         max_new_tokens: int = 512,
+        cancel_event: Optional[threading.Event] = None,
     ) -> DecodeResult:
         """底层方法：执行单次 LLM 生成循环（物理推理）"""
         result = DecodeResult()
@@ -273,8 +275,14 @@ class QwenASREngine:
         sampler = self.llama_mod.LlamaSampler(temperature=temperature, seed=seed)
         last_sampled_token = sampler.sample(self.ctx.ptr)
 
-        for _ in range(max_new_tokens):
+        for _tok_i in range(max_new_tokens):
             if last_sampled_token in [self.model.eos_token, self.ID_IM_END]:
+                break
+
+            # 客户端断开检查：每 8 个 token 检测一次，兼顾响应速度和性能开销
+            if cancel_event and _tok_i & 7 == 0 and cancel_event.is_set():
+                logger.info("[Decode] 客户端已断开，中止 token 生成")
+                result.is_cancelled = True
                 break
 
             if self.ctx.decode_token(last_sampled_token) != 0:
@@ -335,6 +343,7 @@ class QwenASREngine:
         is_last_chunk: bool,
         temperature: float,
         max_new_tokens: int = 512,
+        cancel_event: Optional[threading.Event] = None,
     ) -> DecodeResult:
         """带熔断加温重试的高层推理封装"""
         for i in range(3):
@@ -345,7 +354,11 @@ class QwenASREngine:
                 is_last_chunk,
                 temperature,
                 max_new_tokens,
+                cancel_event=cancel_event,
             )
+            # 客户端断开时不重试，直接返回
+            if res.is_cancelled:
+                break
             if not res.is_aborted:
                 break
             temperature = min(0.6, temperature + 0.2)
@@ -487,6 +500,7 @@ class QwenASREngine:
         rollback_num: int = 5,
         enable_aligner: bool = False,
         disable_vad: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Generator[StreamChunkResult, None, None]:
         """
         流式转录入口：逐分片 yield StreamChunkResult，调用方可实时获取结果。
@@ -523,6 +537,7 @@ class QwenASREngine:
             rollback_num=rollback_num,
             enable_aligner=enable_aligner,
             disable_vad=disable_vad,
+            cancel_event=cancel_event,
         )
 
     # ──────────────────────────────────────────────────────────────────
@@ -591,6 +606,7 @@ class QwenASREngine:
         rollback_num: int = 5,
         enable_aligner: bool = False,
         disable_vad: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Generator[StreamChunkResult, None, None]:
         """
         核心流式转录生成器（numpy 输入版本）。
@@ -608,6 +624,7 @@ class QwenASREngine:
             rollback_num=rollback_num,
             enable_aligner=enable_aligner,
             disable_vad=disable_vad,
+            cancel_event=cancel_event,
         )
 
     # ──────────────────────────────────────────────────────────────────
@@ -625,6 +642,7 @@ class QwenASREngine:
         rollback_num: int,
         enable_aligner: bool = False,
         disable_vad: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Generator[StreamChunkResult, None, None]:
         """
         统一流水线核心（生成器）。asr() 和 asr_stream() 均调用此方法。
@@ -743,6 +761,13 @@ class QwenASREngine:
 
         # ── 主循环 ────────────────────────────────────────────────────
         for i, chunk_def in enumerate(all_chunks):
+            # ── 客户端断开检查 ──────────────────────────────────────
+            if cancel_event and cancel_event.is_set():
+                logger.info(
+                    f"[ASR] 客户端已断开，停止转写 (已完成 {i}/{num_chunks} 分片)"
+                )
+                return
+
             is_last = i == num_chunks - 1
 
             # 从 chunk_def 提取时间坐标和语音标记
@@ -837,6 +862,13 @@ class QwenASREngine:
                     audio_feature, enc_time = self.encoder.encode(chunk_padded)
                 stats["encode_time"] += enc_time
 
+                # 编码后再次检查客户端状态（decode 是最耗时的步骤）
+                if cancel_event and cancel_event.is_set():
+                    logger.info(
+                        f"[ASR] 客户端已断开，停止转写 (分片 {i} 编码完成后)"
+                    )
+                    return
+
                 # ── Step 3: LLM 解码 ─────────────────────────────────────
                 if vad_mode:
                     # VAD 模式：仅用文本上下文，不重放前片段音频。
@@ -880,7 +912,15 @@ class QwenASREngine:
                     is_last,
                     temperature,
                     max_new_tokens,
+                    cancel_event=cancel_event,
                 )
+
+                # 解码过程中客户端断开，立即停止
+                if res.is_cancelled:
+                    logger.info(
+                        f"[ASR] 客户端已断开，停止转写 (分片 {i} 解码中止)"
+                    )
+                    return
 
                 # ── 幻觉过滤 ─────────────────────────────────────────────
                 # 检测 LLM 输出是否为重复单字幻觉（如 "洞洞洞..."、"三三三..."）

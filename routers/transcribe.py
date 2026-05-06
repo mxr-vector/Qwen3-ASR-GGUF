@@ -23,10 +23,6 @@ Transcribe 路由 — 音频转写 API 接口
     data: {"segment":0,"text":"你好","start":0.0,"end":30.0}
 
     id: <seq>
-    event: progress
-    data: {"segment":1,"start":30.0,"end":60.0,"message":"无语音内容"}
-
-    id: <seq>
     event: done
     data: {"duration":60.0,"chunks_total":2,"chunks_empty":1}
 
@@ -186,23 +182,9 @@ async def transcribe_stream(
                 stats = getattr(chunk, "_stats", {})
                 audio_duration = stats.get("audio_duration", 0.0)
 
-            # 非空校验：text 为空（含 VAD 跳过）则发送 progress 事件
+            # 无语音内容片段直接跳过
             if not chunk.text or not chunk.text.strip():
                 empty_count += 1
-                event_id += 1
-                yield ServerSentEvent(
-                    raw_data=json.dumps(
-                        {
-                            "segment": chunk.segment_idx,
-                            "start": round(chunk.start_sec, 3),
-                            "end": round(chunk.end_sec, 3),
-                            "message": "无语音内容",
-                        },
-                        ensure_ascii=False,
-                    ),
-                    event="progress",
-                    id=str(event_id),
-                )
                 continue
 
             chunk_data = {

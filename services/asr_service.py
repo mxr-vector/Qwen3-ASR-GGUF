@@ -189,12 +189,17 @@ class ASRService:
         if not self._engine:
             raise RuntimeError("ASR 引擎未初始化")
 
+        cancel_event = threading.Event()
         audio_duration = self._get_audio_duration(audio_path)
         threshold = settings.ASR_DYNAMIC_CHUNK_THRESHOLD
         use_fast_path = audio_duration <= threshold
 
         if use_fast_path:
-            # ── 快速路径：短音频 asyncio.to_thread 直接执行 ──────────
+            # ── 快速路径：短音频使用显式线程 + 完成事件 ─────────────
+            # 注意：不能直接用 asyncio.to_thread，因为线程池中的线程
+            # 无法被外部取消。客户端断开时 CancelledError 会让 await
+            # 提前返回，但底层线程仍在继续推理，若此时释放 _lock，
+            # 下一个请求会与未结束的推理并发访问 QwenASREngine。
             async with self._lock:
                 logger.debug(
                     f"[流式-快速] 开始转写: {os.path.basename(audio_path)} "
@@ -203,28 +208,60 @@ class ASRService:
                 t0 = time.time()
                 engine = self._engine
 
+                result_holder: dict = {}
+                done_event = threading.Event()
+
                 def _fast_run():
-                    return list(
-                        engine.transcribe_stream(
-                            audio_file=audio_path,
-                            context=context or settings.DEFAULT_CONTEXT,
-                            language=language or settings.DEFAULT_LANGUAGE,
-                            temperature=temperature,
-                            enable_aligner=enable_aligner,
-                            disable_vad=disable_vad,
+                    try:
+                        result_holder["chunks"] = list(
+                            engine.transcribe_stream(
+                                audio_file=audio_path,
+                                context=context or settings.DEFAULT_CONTEXT,
+                                language=language or settings.DEFAULT_LANGUAGE,
+                                temperature=temperature,
+                                enable_aligner=enable_aligner,
+                                disable_vad=disable_vad,
+                                cancel_event=cancel_event,
+                            )
                         )
+                    except Exception as e:
+                        result_holder["exc"] = e
+                    finally:
+                        done_event.set()
+
+                worker_thread = threading.Thread(target=_fast_run, daemon=True)
+                worker_thread.start()
+
+                try:
+                    # 轮询等待推理线程完成：
+                    # asyncio.sleep 是可取消点，客户端断开可立即进入 finally
+                    while not done_event.is_set():
+                        await asyncio.sleep(0.05)
+
+                    if "exc" in result_holder:
+                        raise result_holder["exc"]
+
+                    chunks = result_holder.get("chunks", [])
+                    elapsed = time.time() - t0
+                    logger.debug(
+                        f"[流式-快速] 转写完成: {elapsed:.2f}s | "
+                        f"{os.path.basename(audio_path)} | {len(chunks)} 个分片"
                     )
 
-                chunks = await asyncio.to_thread(_fast_run)
-
-                elapsed = time.time() - t0
-                logger.debug(
-                    f"[流式-快速] 转写完成: {elapsed:.2f}s | "
-                    f"{os.path.basename(audio_path)} | {len(chunks)} 个分片"
-                )
-
-                for chunk in chunks:
-                    yield chunk
+                    for chunk in chunks:
+                        yield chunk
+                finally:
+                    # 客户端断开/异常/正常结束统一处理：
+                    # 1) 通知底层推理尽快终止 (_asr_core/_decode 观察此信号)
+                    # 2) 等待工作线程真正回收再释放 _lock，防止并发进引擎
+                    cancel_event.set()
+                    if worker_thread.is_alive():
+                        await asyncio.to_thread(worker_thread.join, 30)
+                        if worker_thread.is_alive():
+                            logger.warning(
+                                "[流式-快速] 工作线程在 30s 内未能终止，"
+                                "可能仍在占用引擎资源"
+                            )
         else:
             # ── 实时路径：长音频 Thread+Queue 管道 ─────────────────────
             async with self._lock:
@@ -247,6 +284,7 @@ class ASRService:
                             temperature=temperature,
                             enable_aligner=enable_aligner,
                             disable_vad=disable_vad,
+                            cancel_event=cancel_event,
                         ):
                             asyncio.run_coroutine_threadsafe(
                                 queue.put(chunk), loop
@@ -269,16 +307,20 @@ class ASRService:
                 worker_thread = threading.Thread(target=_worker, daemon=True)
                 worker_thread.start()
 
-                while True:
-                    item = await queue.get()
-                    if item is _STREAM_SENTINEL:
-                        break
-                    if isinstance(item, Exception):
-                        worker_thread.join(timeout=60)
-                        raise item
-                    yield item
-
-                worker_thread.join(timeout=300)
+                try:
+                    while True:
+                        item = await queue.get()
+                        if item is _STREAM_SENTINEL:
+                            break
+                        if isinstance(item, Exception):
+                            worker_thread.join(timeout=60)
+                            raise item
+                        yield item
+                finally:
+                    # 客户端断开时：设置取消信号，等待工作线程结束
+                    cancel_event.set()
+                    # 使用 to_thread 避免阻塞事件循环
+                    await asyncio.to_thread(worker_thread.join, 30)
 
                 elapsed = time.time() - t0
                 logger.debug(
