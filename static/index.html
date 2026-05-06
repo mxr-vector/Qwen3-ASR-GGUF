@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Qwen3-ASR 语音转写服务</title>
+<link rel="stylesheet" href="/static/index.css">
+</head>
+<body>
+<div class="container">
+
+  <!-- ═══ HEADER ═══ -->
+  <header>
+    <h1>Qwen3-ASR 语音转写服务</h1>
+    <div class="header-meta">
+      <span>📄 <a id="docsLink" href="/docs" target="_blank">/docs</a></span>
+      <span id="healthStatus"><span class="status-dot"></span> 检查中…</span>
+    </div>
+  </header>
+
+  <div class="main-layout">
+  <div class="left-panel">
+
+  <!-- ═══ UPLOAD ═══ -->
+  <div class="card">
+    <div class="card-title">音频文件上传</div>
+    <div class="dropzone" id="dropzone">
+      <div class="dropzone-icon">⏦</div>
+      <p>拖拽音频文件到此处，或点击选择文件</p>
+      <div class="file-types">支持 MP3 / WAV / FLAC / OGG / M4A / WMA / AAC</div>
+      <input type="file" id="fileInput" accept=".mp3,.wav,.flac,.ogg,.m4a,.wma,.aac,.opus,.webm">
+    </div>
+    <div class="file-info" id="fileInfo">
+      <span id="fileName"></span>
+      <span id="fileSize"></span>
+      <button class="remove-btn" id="removeFile" title="移除">✕</button>
+    </div>
+
+    <!-- Config -->
+    <div style="margin-top: 14px;">
+      <button class="config-toggle" id="configToggle">
+        <span class="arrow">▶</span> 高级配置
+      </button>
+      <div class="config-panel" id="configPanel">
+        <div class="config-grid">
+          <div class="config-item">
+            <label>语言</label>
+            <select id="cfgLanguage">
+              <option value="">自动检测</option>
+              <option value="Chinese">中文</option>
+              <option value="English">英文</option>
+            </select>
+          </div>
+          <div class="config-item">
+            <label>解码温度</label>
+            <div class="range-wrap">
+              <input type="range" id="cfgTemp" min="0" max="1" step="0.05" value="0">
+              <span class="range-val" id="cfgTempVal">0.00</span>
+            </div>
+          </div>
+          <div class="config-item">
+            <div class="switch-row">
+              <label>启用 SRT 字幕</label>
+              <label class="switch"><input type="checkbox" id="cfgSrt"><span class="slider"></span></label>
+            </div>
+          </div>
+          <div class="config-item">
+            <div class="switch-row">
+              <label>启用对齐模型</label>
+              <label class="switch"><input type="checkbox" id="cfgAligner"><span class="slider"></span></label>
+            </div>
+          </div>
+          <div class="config-item">
+            <div class="switch-row">
+              <label>禁用 VAD</label>
+              <label class="switch"><input type="checkbox" id="cfgDisableVad"><span class="slider"></span></label>
+            </div>
+          </div>
+          <div class="config-item full">
+            <label>上下文提示词</label>
+            <textarea id="cfgContext" placeholder="可选，为模型提供上下文提示以提高转写准确度…" rows="2"></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <button class="btn-primary" id="btnStart" disabled>开始转写</button>
+  </div>
+
+  <!-- ═══ RECORDING ═══ -->
+  <div class="card">
+    <div class="card-title">实时录音转写</div>
+
+    <div class="recording-controls">
+      <div class="rec-config">
+        <div class="config-grid">
+          <div class="config-item">
+            <label>语言</label>
+            <select id="recLanguage">
+              <option value="">自动检测</option>
+              <option value="Chinese">中文</option>
+              <option value="English">英文</option>
+            </select>
+          </div>
+          <div class="config-item">
+            <label>分片时长 (秒)</label>
+            <div class="range-wrap">
+              <input type="range" id="recChunkSeconds" min="1" max="10" step="1" value="5">
+              <span class="range-val" id="recChunkSecondsVal">5</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rec-btn-group">
+        <button class="rec-btn rec-btn-start" id="btnRecord">开始录音</button>
+        <button class="rec-btn rec-btn-stop" id="btnStopRecord" disabled>停止录音</button>
+      </div>
+
+      <div class="rec-status" id="recStatus">
+        <span class="rec-ws-status" id="recWsStatus">未连接</span>
+        <span class="rec-timer" id="recTimer"></span>
+      </div>
+    </div>
+
+    <div class="result-log rec-result-log" id="recResultLog"></div>
+    <div class="result-actions rec-actions">
+      <button class="btn-copy" id="btnRecCopy" style="display:none;">复制文本</button>
+      <button class="btn-copy" id="btnRecClear" style="display:none;">清空</button>
+    </div>
+  </div>
+
+  </div><!-- /left-panel -->
+  <div class="right-panel">
+
+  <!-- ═══ RESULT ═══ -->
+  <div class="card" id="resultArea">
+    <div class="result-header">
+      <div class="card-title" style="margin-bottom:0;">转写结果</div>
+      <div id="liveIndicator" class="pulse-indicator" style="display:none;">
+        <span class="pulse-dot"></span> 转写中…
+        <span class="heartbeat-badge" id="heartbeatBadge"></span>
+      </div>
+    </div>
+    <div class="result-log" id="resultLog"></div>
+    <div class="summary-bar" id="summaryBar"></div>
+    <div class="result-actions">
+      <button class="btn-copy" id="btnCopy" style="display:none;">复制全部文本</button>
+      <button class="btn-copy" id="btnClear" style="display:none;">清空</button>
+    </div>
+  </div>
+
+  </div><!-- /right-panel -->
+  </div><!-- /main-layout -->
+
+</div>
+
+<script src="/static/index.js"></script>
+</body>
+</html>

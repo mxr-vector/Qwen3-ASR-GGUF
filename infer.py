@@ -6,6 +6,7 @@ Qwen3-ASR Web 服务入口
     uv run python infer.py
     uv run python infer.py --port 8002 --use_gpu True
 """
+
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -14,12 +15,13 @@ from core.config import args, settings
 from core.logger import logger
 from core.gobal_exception import register_exception
 from core.auto_import import load_routers
+from fastapi.staticfiles import StaticFiles
 from core.middleware_request_id import RequestIDMiddleware
 from core.middleware_access_log import AccessLogMiddleware
 from core.middleware_auth import TokenAuthMiddleware
-
+from fastapi.middleware.cors import CORSMiddleware
 import services.asr_service as asr_module
-
+from fastapi.responses import FileResponse
 import os
 import sys
 
@@ -80,7 +82,8 @@ async def lifespan(app: FastAPI):
     asr_module.asr_service = None
     logger.info("服务已停止")
 
-
+# 配置允许跨域的域名
+origins = ["*"]
 # ─── 创建 FastAPI 应用 ─────────────────────────────────────
 app = FastAPI(
     title="Qwen3-ASR API",
@@ -88,8 +91,16 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-
+# 挂载静态文件
+app.mount("/static", StaticFiles(directory="static"), name="static")
 # ─── 注册中间件 (执行顺序: 从下到上) ──────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  # 允许的域名列表
+    allow_credentials=True,  # 是否允许发送 Cookie
+    allow_methods=["*"],  # 允许的请求方法，* 表示全部
+    allow_headers=["*"],  # 允许的请求头
+)
 app.add_middleware(AccessLogMiddleware)
 app.add_middleware(TokenAuthMiddleware)
 app.add_middleware(RequestIDMiddleware)
@@ -101,13 +112,14 @@ register_exception(app)
 load_routers(app)
 
 
-@app.get("/", tags=["Root"], include_in_schema=False)
+@app.get("/", summary="静态首页", include_in_schema=False)
 async def root():
-    return {
-        "service": "Qwen3-ASR API",
-        "version": "1.0.0",
-        "docs": f"http://{args.host}:{args.port}/docs",
-    }
+    return FileResponse("static/index.html")
+
+
+@app.get("/favicon.ico", summary="图标", include_in_schema=False)
+async def favicon():
+    return FileResponse("static/favicon.ico")
 
 
 # ─── 启动入口 ─────────────────────────────────────────────
