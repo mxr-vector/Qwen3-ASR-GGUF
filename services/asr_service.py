@@ -4,7 +4,6 @@ ASR 服务层 — 线程安全的 QwenASREngine 封装
 
 设计要点:
 - 使用 asyncio.Lock 保证同一时刻只有一个推理任务运行（引擎不支持并发）
-- 使用 asyncio.to_thread() 将阻塞推理放入线程池，不阻塞 FastAPI 事件循环
 - 流式接口双路径: 短音频 to_thread 快速路径 / 长音频 Thread+Queue 实时管道
 - 全局单例模式，由 lifespan 管理生命周期
 """
@@ -22,7 +21,6 @@ from qwen_asr_gguf.inference import (
     ASREngineConfig,
     AlignerConfig,
     VADConfig,
-    TranscribeResult,
     StreamChunkResult,
 )
 
@@ -32,7 +30,7 @@ _STREAM_SENTINEL = object()
 
 
 class ASRService:
-    """线程安全的 ASR 服务封装（支持离线转写与流式转写）"""
+    """线程安全的 ASR 服务封装（流式转写）"""
 
     def __init__(self):
         self._lock = asyncio.Lock()
@@ -114,72 +112,6 @@ class ASRService:
     @property
     def is_ready(self) -> bool:
         return self._engine is not None
-
-    # ──────────────────────────────────────────────────────────────────
-    # 离线转写（完整结果一次性返回）
-    # ──────────────────────────────────────────────────────────────────
-
-    async def transcribe(
-        self,
-        audio_path: str,
-        context: Optional[str] = None,
-        language: Optional[str] = None,
-        temperature: float = 0.4,
-        enable_aligner: bool = False,
-    ) -> TranscribeResult:
-        """
-        对单个音频文件执行离线转写。
-
-        使用 asyncio.Lock 保证串行访问引擎，
-        使用 asyncio.to_thread 避免阻塞事件循环。
-        """
-        if not self._engine:
-            raise RuntimeError("ASR 引擎未初始化")
-
-        async with self._lock:
-            logger.debug(f"[离线] 开始转写: {os.path.basename(audio_path)}")
-            t0 = time.time()
-
-            result = await asyncio.to_thread(
-                self._engine.transcribe,
-                audio_file=audio_path,
-                context=context or settings.DEFAULT_CONTEXT,
-                language=language or settings.DEFAULT_LANGUAGE,
-                temperature=temperature,
-                enable_aligner=enable_aligner,
-            )
-
-            elapsed = time.time() - t0
-            text_preview = (
-                result.text[:80] + "..." if len(result.text) > 80 else result.text
-            )
-            logger.debug(f"[离线] 转写完成: {elapsed:.2f}s | {text_preview}")
-
-            return result
-
-    async def transcribe_bytes(
-        self,
-        audio_bytes: bytes,
-        filename: str,
-        context: Optional[str] = None,
-        language: Optional[str] = None,
-        temperature: float = 0.4,
-        enable_aligner: bool = False,
-    ) -> TranscribeResult:
-        """
-        接收二进制音频数据，写入临时文件后执行离线转写。
-        """
-        tmp_path = self._save_tmp(audio_bytes, filename)
-        try:
-            return await self.transcribe(
-                audio_path=tmp_path,
-                context=context,
-                language=language,
-                temperature=temperature,
-                enable_aligner=enable_aligner,
-            )
-        finally:
-            self._remove_tmp(tmp_path)
 
     # ──────────────────────────────────────────────────────────────────
     # 流式转写（逐分片实时 yield StreamChunkResult）
