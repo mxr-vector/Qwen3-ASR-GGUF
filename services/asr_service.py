@@ -7,6 +7,7 @@ ASR 服务层 — 线程安全的 QwenASREngine 封装
 - 流式接口双路径: 短音频 to_thread 快速路径 / 长音频 Thread+Queue 实时管道
 - 全局单例模式，由 lifespan 管理生命周期
 """
+
 import asyncio
 import os
 import threading
@@ -23,7 +24,6 @@ from qwen_asr_gguf.inference import (
     VADConfig,
     StreamChunkResult,
 )
-
 
 # ─── 哨兵对象，用于标识流式队列结束 ──────────────────────────
 _STREAM_SENTINEL = object()
@@ -119,12 +119,47 @@ class ASRService:
 
     @staticmethod
     def _get_audio_duration(audio_path: str) -> float:
-        """快速获取音频时长（秒），仅读取文件头，不加载音频数据"""
+        """快速获取音频时长（秒），支持所有格式（含 MP3）"""
+        import os
+        from pathlib import Path
+
+        ext = Path(audio_path).suffix.lower()
+        SF_FORMATS = {".wav", ".flac", ".ogg"}
+
+        # soundfile 支持的格式优先用 soundfile（最快，只读文件头）
+        if ext in SF_FORMATS:
+            try:
+                import soundfile as sf
+
+                return sf.info(audio_path).duration
+            except Exception:
+                pass
+
+        # 其他格式（MP3/M4A/OPUS 等）使用 ffprobe 获取时长
         try:
-            import soundfile as sf
-            return sf.info(audio_path).duration
+            import subprocess
+
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(audio_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return float(result.stdout.strip())
         except Exception:
-            return float("inf")  # 无法获取时走长音频路径
+            pass
+
+        return float("inf")  # 无法获取时走长音频路径
 
     async def stream_transcribe(
         self,
@@ -133,6 +168,7 @@ class ASRService:
         language: Optional[str] = None,
         temperature: float = 0.4,
         enable_aligner: bool = False,
+        disable_vad: bool = False,
     ) -> AsyncGenerator[StreamChunkResult, None]:
         """
         对单个音频文件执行流式转写，逐分片 yield StreamChunkResult。
@@ -168,13 +204,16 @@ class ASRService:
                 engine = self._engine
 
                 def _fast_run():
-                    return list(engine.transcribe_stream(
-                        audio_file=audio_path,
-                        context=context or settings.DEFAULT_CONTEXT,
-                        language=language or settings.DEFAULT_LANGUAGE,
-                        temperature=temperature,
-                        enable_aligner=enable_aligner,
-                    ))
+                    return list(
+                        engine.transcribe_stream(
+                            audio_file=audio_path,
+                            context=context or settings.DEFAULT_CONTEXT,
+                            language=language or settings.DEFAULT_LANGUAGE,
+                            temperature=temperature,
+                            enable_aligner=enable_aligner,
+                            disable_vad=disable_vad,
+                        )
+                    )
 
                 chunks = await asyncio.to_thread(_fast_run)
 
@@ -207,6 +246,7 @@ class ASRService:
                             language=language or settings.DEFAULT_LANGUAGE,
                             temperature=temperature,
                             enable_aligner=enable_aligner,
+                            disable_vad=disable_vad,
                         ):
                             asyncio.run_coroutine_threadsafe(
                                 queue.put(chunk), loop
@@ -254,6 +294,7 @@ class ASRService:
         language: Optional[str] = None,
         temperature: float = 0.4,
         enable_aligner: bool = False,
+        disable_vad: bool = False,
     ) -> AsyncGenerator[StreamChunkResult, None]:
         """
         接收二进制音频数据，写入临时文件后执行流式转写。
@@ -267,6 +308,7 @@ class ASRService:
                 language=language,
                 temperature=temperature,
                 enable_aligner=enable_aligner,
+                disable_vad=disable_vad,
             ):
                 yield chunk
         finally:

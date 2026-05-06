@@ -96,7 +96,10 @@ class QwenASREngine:
         )
         self.embedding_table = llama.get_token_embeddings_gguf(llm_gguf)
         self.ctx = llama.LlamaContext(
-            self.model, n_ctx=config.n_ctx, n_batch=4096, embeddings=False,
+            self.model,
+            n_ctx=config.n_ctx,
+            n_batch=4096,
+            embeddings=False,
             n_threads=config.n_threads or None,
             n_threads_batch=config.n_threads_batch or None,
         )
@@ -483,6 +486,7 @@ class QwenASREngine:
         temperature: float = 0.0,
         rollback_num: int = 5,
         enable_aligner: bool = False,
+        disable_vad: bool = False,
     ) -> Generator[StreamChunkResult, None, None]:
         """
         流式转录入口：逐分片 yield StreamChunkResult，调用方可实时获取结果。
@@ -518,6 +522,7 @@ class QwenASREngine:
             temperature=temperature,
             rollback_num=rollback_num,
             enable_aligner=enable_aligner,
+            disable_vad=disable_vad,
         )
 
     # ──────────────────────────────────────────────────────────────────
@@ -585,6 +590,7 @@ class QwenASREngine:
         temperature: float = 0.0,
         rollback_num: int = 5,
         enable_aligner: bool = False,
+        disable_vad: bool = False,
     ) -> Generator[StreamChunkResult, None, None]:
         """
         核心流式转录生成器（numpy 输入版本）。
@@ -601,6 +607,7 @@ class QwenASREngine:
             temperature=temperature,
             rollback_num=rollback_num,
             enable_aligner=enable_aligner,
+            disable_vad=disable_vad,
         )
 
     # ──────────────────────────────────────────────────────────────────
@@ -617,6 +624,7 @@ class QwenASREngine:
         temperature: float,
         rollback_num: int,
         enable_aligner: bool = False,
+        disable_vad: bool = False,
     ) -> Generator[StreamChunkResult, None, None]:
         """
         统一流水线核心（生成器）。asr() 和 asr_stream() 均调用此方法。
@@ -689,7 +697,7 @@ class QwenASREngine:
                     f"≤ {dynamic_threshold}s)，单一分片直接处理"
                 )
 
-        elif self.vad is not None or self._ensure_vad():
+        elif not disable_vad and (self.vad is not None or self._ensure_vad()):
             # ── 长音频：VAD 自适应动态分片 ─────────────────────────
             vad_mode = True
             from .schema import VADChunk
