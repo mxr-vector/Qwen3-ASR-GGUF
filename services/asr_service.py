@@ -18,7 +18,7 @@ from typing import AsyncGenerator, Optional
 import numpy as np
 
 from core.logger import logger
-from core.config import settings, args
+from core.config import settings
 from qwen_asr_gguf.inference import (
     QwenASREngine,
     ASREngineConfig,
@@ -62,6 +62,7 @@ class ASRService:
             effective_gpu_layers = 99 if config.use_gpu else 0
 
         import platform
+
         platform_info = f"{platform.system()} {platform.machine()}"
 
         logger.info(
@@ -87,8 +88,9 @@ class ASRService:
 
     def _build_engine_config(self) -> ASREngineConfig:
         """根据全局 settings 构建 ASR 引擎配置。"""
+        # Aligner (0.6B) 使用 CPU 推理即可，无需占用 GPU 显存
         align_config = AlignerConfig(
-            use_gpu=settings.ALIGNER_USE_GPU,
+            use_gpu=False,
             model_dir=settings.MODEL_DIR,
         )
 
@@ -109,8 +111,8 @@ class ASRService:
 
         return ASREngineConfig(
             model_dir=settings.MODEL_DIR,
-            use_gpu=args.use_gpu,
-            n_gpu_layers=args.n_gpu_layers,
+            use_gpu=settings.USE_GPU,
+            n_gpu_layers=settings.N_GPU_LAYERS,
             chunk_size=settings.ASR_CHUNK_SIZE,
             memory_num=settings.ASR_MEMORY_NUM,
             align_config=align_config,
@@ -463,7 +465,10 @@ class ASRService:
             total_ms = (time.time() - t_start) * 1000
             logger.info(
                 "[WS转写] 完成 | 音频=%.2fs | 锁等待=%.0fms | 推理=%.0fms | 总耗时=%.0fms",
-                audio_duration, lock_wait_ms, infer_ms, total_ms,
+                audio_duration,
+                lock_wait_ms,
+                infer_ms,
+                total_ms,
             )
 
             return text if text else None

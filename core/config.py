@@ -6,12 +6,14 @@ import yaml
 def _detect_gpu_available():
     """跨平台 GPU 可用性检测（支持 CUDA 和 macOS Metal）"""
     import platform
+
     # macOS: llama.cpp 原生支持 Metal GPU 加速
     if platform.system() == "Darwin":
         return True
     # Linux/Windows: 检测 CUDA
     try:
         import torch
+
         return torch.cuda.is_available()
     except ImportError:
         return False
@@ -83,6 +85,13 @@ class Settings(BaseSettings):
     MAX_HOTWORDS: int = 10
     ENABLE_CTC: bool = True
 
+    # Global GPU configuration
+    # USE_GPU 统一控制 ASR LLM 推理、Audio Encoder的 GPU 加速
+    USE_GPU: bool = args.use_gpu
+    N_GPU_LAYERS: int = (
+        args.n_gpu_layers
+    )  # GPU offload 层数，-1=自动，0=纯CPU，99=全部offload
+
     # Global ASR engine defaults
     ASR_CHUNK_SIZE: float = 30.0
     ASR_MEMORY_NUM: int = 1
@@ -91,10 +100,7 @@ class Settings(BaseSettings):
     )
     DEFAULT_LANGUAGE: str = "Chinese"
 
-    # Global aligner defaults
-    ALIGNER_USE_GPU: bool = args.use_gpu
-
-    # Global VAD defaults
+    # Global VAD defaults (独立于全局 GPU 开关)
     # VAD 由 ASR_DYNAMIC_CHUNK_THRESHOLD 自动触发（音频 > 阈值时延迟加载），无需手动开关
     VAD_MODEL_DIR: str = "./models/FireRedVAD/VAD"
     VAD_USE_GPU: bool = False

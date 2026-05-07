@@ -56,7 +56,7 @@ from fastapi import (
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel
 
-from core.config import args
+from core.config import settings
 from core.logger import logger
 from core.response import R
 from qwen_asr_gguf.inference import exporters, itn
@@ -393,18 +393,20 @@ async def transcribe_realtime_ws(
 
             try:
                 import time as _time
+
                 _t0 = _time.time()
                 res = await _do_transcribe(buf, sr, seg_idx, end_sec)
                 _elapsed_ms = (_time.time() - _t0) * 1000
                 if res:
                     chunk_count += 1
                     event_id += 1
-                    await _ws_send(
-                        {"id": str(event_id), "event": "chunk", "data": res}
-                    )
+                    await _ws_send({"id": str(event_id), "event": "chunk", "data": res})
                     logger.info(
                         "[WS录音] 片段转写完成 | seg=%d | %.2fs音频 | 耗时=%.0fms | text=%s",
-                        seg_idx, buf.size / sr, _elapsed_ms, res["text"][:30]
+                        seg_idx,
+                        buf.size / sr,
+                        _elapsed_ms,
+                        res["text"][:30],
                     )
                 else:
                     empty_count += 1
@@ -428,7 +430,12 @@ async def transcribe_realtime_ws(
                 if buffer.size >= min_flush_samples:
                     audio_seconds_total += len(buffer) / buf_samplerate
                     await transcribe_queue.put(
-                        (buffer.copy(), buf_samplerate, segment_idx, audio_seconds_total)
+                        (
+                            buffer.copy(),
+                            buf_samplerate,
+                            segment_idx,
+                            audio_seconds_total,
+                        )
                     )
                     segment_idx += 1
                 break
@@ -442,7 +449,12 @@ async def transcribe_realtime_ws(
                     if buffer.size >= min_flush_samples:
                         audio_seconds_total += len(buffer) / buf_samplerate
                         await transcribe_queue.put(
-                            (buffer.copy(), buf_samplerate, segment_idx, audio_seconds_total)
+                            (
+                                buffer.copy(),
+                                buf_samplerate,
+                                segment_idx,
+                                audio_seconds_total,
+                            )
                         )
                         segment_idx += 1
                         buffer = np.empty(0, dtype=np.float32)
@@ -456,7 +468,12 @@ async def transcribe_realtime_ws(
                         )
                         audio_seconds_total += len(buffer) / buf_samplerate
                         await transcribe_queue.put(
-                            (buffer.copy(), buf_samplerate, segment_idx, audio_seconds_total)
+                            (
+                                buffer.copy(),
+                                buf_samplerate,
+                                segment_idx,
+                                audio_seconds_total,
+                            )
                         )
                         segment_idx += 1
                         buffer = np.empty(0, dtype=np.float32)
@@ -572,6 +589,6 @@ async def health_check():
     data = HealthData(
         status="ok" if service.is_ready else "unavailable",
         engine_ready=service.is_ready,
-        gpu_enabled=args.use_gpu,
+        gpu_enabled=settings.USE_GPU,
     )
     return R.success(data=data)

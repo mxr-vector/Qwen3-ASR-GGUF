@@ -202,7 +202,7 @@ class ASREngineConfig:
                 "align_config",
                 AlignerConfig(
                     model_dir=self.model_dir,
-                    use_gpu=self.use_gpu,
+                    use_gpu=False,
                     pad_to=self.pad_to,  # Aligner 默认也跟随主 pad_to
                 ),
             )
