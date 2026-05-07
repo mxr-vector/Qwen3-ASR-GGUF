@@ -19,3 +19,8 @@ outputs/
 *.txt
 *bin/
 uploads/
+
+
+.claude
+.qoder
+openspec

@@ -107,6 +107,8 @@ class ASRService:
             extend_speech_frame=settings.VAD_EXTEND_SPEECH_FRAME,
             chunk_max_frame=settings.VAD_CHUNK_MAX_FRAME,
             vad_min_duration=settings.VAD_MIN_DURATION,
+            max_safe_skip_sec=settings.VAD_MAX_SAFE_SKIP_SEC,
+            min_speech_coverage=settings.VAD_MIN_SPEECH_COVERAGE,
         )
 
         return ASREngineConfig(

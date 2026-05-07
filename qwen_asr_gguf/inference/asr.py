@@ -692,8 +692,48 @@ class QwenASREngine:
             "align_time": 0.0,
             "vad_time": 0.0,
             "vad_skipped_chunks": 0,
+            "vad_speech_coverage": 0.0,
+            "vad_speech_chunks": 0,
+            "vad_silence_chunks": 0,
+            "vad_fallback_chunks": 0,
+            "vad_longest_skipped_span": 0.0,
+            "vad_skip_details": [],
+            "vad_sparse_fallback": False,
         }
         t_main_start = time.time()
+
+        def _fixed_chunks(source: str = "fixed") -> list:
+            num_fixed = int(np.ceil(total_len / samples_per_chunk))
+            return [
+                ASRS_Segment(
+                    idx=i,
+                    audio_start=i * chunk_size_sec,
+                    audio_end=min((i + 1) * chunk_size_sec, total_duration),
+                )
+                for i in range(num_fixed)
+            ]
+
+        def _set_final_stats(chunk_result):
+            t_total = time.time() - t_main_start
+            if self.verbose:
+                self._print_stats(stats, total_duration, t_total)
+            stats["audio_duration"] = total_duration
+            setattr(chunk_result, "_stats", stats)
+
+        def _record_skip(chunk_idx: int, start: float, end: float, reason: str):
+            stats["vad_skipped_chunks"] += 1
+            span = max(0.0, end - start)
+            stats["vad_longest_skipped_span"] = max(
+                stats["vad_longest_skipped_span"], span
+            )
+            stats["vad_skip_details"].append(
+                {
+                    "segment": chunk_idx,
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "reason": reason,
+                }
+            )
 
         # ── 选择分片策略 ──────────────────────────────────────────────
         #
@@ -707,13 +747,7 @@ class QwenASREngine:
         if total_duration <= dynamic_threshold:
             # ── 短音频：不分片 ─────────────────────────────────────
             vad_mode = False
-            all_chunks = [
-                ASRS_Segment(
-                    idx=0,
-                    audio_start=0.0,
-                    audio_end=total_duration,
-                )
-            ]
+            all_chunks = _fixed_chunks()
             if self.verbose:
                 logger.debug(
                     f"[QwenASR] 短音频 ({total_duration:.1f}s "
@@ -723,40 +757,56 @@ class QwenASREngine:
         elif not disable_vad and (self.vad is not None or self._ensure_vad()):
             # ── 长音频：VAD 自适应动态分片 ─────────────────────────
             vad_mode = True
-            from .schema import VADChunk
 
             t_vad = time.time()
             vad_result = self.vad.adaptive_detect(audio, sr)
             stats["vad_time"] += time.time() - t_vad
+            stats["vad_speech_coverage"] = round(vad_result.speech_ratio, 6)
 
-            all_chunks = self.vad.build_chunks(
-                timestamps=vad_result.timestamps,
-                total_dur=total_duration,
-                max_span_sec=chunk_size_sec,
+            vad_config = self.config.vad_config
+            sparse_vad = vad_result.speech_ratio < vad_config.min_speech_coverage
+
+            if sparse_vad:
+                vad_mode = False
+                stats["vad_sparse_fallback"] = True
+                all_chunks = _fixed_chunks()
+                logger.warning(
+                    f"[VAD] 语音覆盖率 {vad_result.speech_ratio * 100:.2f}% "
+                    f"低于阈值 {vad_config.min_speech_coverage * 100:.2f}%，"
+                    "回退到固定分片以避免漏识别"
+                )
+            else:
+                all_chunks = self.vad.build_chunks(
+                    timestamps=vad_result.timestamps,
+                    total_dur=total_duration,
+                    max_span_sec=chunk_size_sec,
+                )
+
+            stats["vad_speech_chunks"] = sum(
+                1 for c in all_chunks if getattr(c, "source", "") == "vad"
+            )
+            stats["vad_silence_chunks"] = sum(
+                1 for c in all_chunks if getattr(c, "source", "") == "silence"
+            )
+            stats["vad_fallback_chunks"] = sum(
+                1 for c in all_chunks if getattr(c, "source", "") == "fallback"
             )
             if self.verbose:
-                n_speech = sum(1 for c in all_chunks if c.has_speech)
-                n_silence = len(all_chunks) - n_speech
-                logger.debug(
-                    f"[VAD] 动态分片完成 | 音频 {total_duration:.1f}s "
-                    f"| 耗时 {stats['vad_time']:.2f}s "
-                    f"| 语音分片 {n_speech}，静音分片 {n_silence}"
+                logger.info(
+                    f"[VAD] 动态分片完成 | 音频 {total_duration:.1f}s | "
+                    f"耗时 {stats['vad_time']:.2f}s | "
+                    f"覆盖率 {stats['vad_speech_coverage'] * 100:.2f}% | "
+                    f"语音={stats['vad_speech_chunks']} "
+                    f"静音={stats['vad_silence_chunks']} "
+                    f"fallback={stats['vad_fallback_chunks']}"
                 )
 
         else:
             # ── 降级：VAD 不可用，固定等长分片 ────────────────────
             vad_mode = False
-            num_fixed = int(np.ceil(total_len / samples_per_chunk))
-            all_chunks = [
-                ASRS_Segment(
-                    idx=i,
-                    audio_start=i * chunk_size_sec,
-                    audio_end=min((i + 1) * chunk_size_sec, total_duration),
-                )
-                for i in range(num_fixed)
-            ]
+            all_chunks = _fixed_chunks()
             if self.verbose:
-                logger.debug(f"[QwenASR] VAD 不可用，使用固定分片 ({num_fixed} 片)")
+                logger.debug(f"[QwenASR] VAD 不可用，使用固定分片 ({len(all_chunks)} 片)")
 
         num_chunks = len(all_chunks)
         logger.info(
@@ -781,11 +831,15 @@ class QwenASREngine:
                 end_sec = chunk_def.end_sec
                 has_speech = chunk_def.has_speech
                 speech_sec = chunk_def.speech_sec
+                chunk_source = getattr(chunk_def, "source", "vad")
+                skip_reason = getattr(chunk_def, "skip_reason", "")
             else:
                 start_sec = chunk_def.audio_start
                 end_sec = chunk_def.audio_end
                 has_speech = True  # 固定模式下统一送 ASR
                 speech_sec = end_sec - start_sec
+                chunk_source = "fixed"
+                skip_reason = ""
 
             try:
                 s_smpl = int(start_sec * sr)
@@ -804,7 +858,7 @@ class QwenASREngine:
 
                 # ── Step 1: 静音跳过 ──────────────────────────────────────
                 if not has_speech:
-                    stats["vad_skipped_chunks"] += 1
+                    _record_skip(i, start_sec, end_sec, skip_reason or "vad_silence")
                     chunk_result = StreamChunkResult(
                         segment_idx=i,
                         text="",
@@ -814,13 +868,10 @@ class QwenASREngine:
                         skipped_by_vad=True,
                         full_text=total_full_text if is_last else "",
                     )
+                    setattr(chunk_result, "_chunk_source", chunk_source)
+                    setattr(chunk_result, "_skip_reason", skip_reason or "vad_silence")
                     if is_last:
-                        t_total = time.time() - t_main_start
-                        if self.verbose:
-                            self._print_stats(stats, total_duration, t_total)
-                        stats["audio_duration"] = total_duration
-                        setattr(chunk_result, "_stats", stats)
-                        setattr(chunk_result, "_align_items", [])
+                        _set_final_stats(chunk_result)
                     yield chunk_result
                     continue
 
@@ -828,7 +879,7 @@ class QwenASREngine:
                 # 语音长度 <0.3s 的分片几乎无有效信息，LLM 易在极短输入
                 # 上产生幻觉文本（如随机数字、重复字符），直接跳过。
                 if vad_mode and speech_sec < 0.3:
-                    stats["vad_skipped_chunks"] += 1
+                    _record_skip(i, start_sec, end_sec, "short_speech")
                     if self.verbose:
                         logger.debug(
                             f"  [VAD] 分片 #{i:02d} 语音过短 "
@@ -843,15 +894,15 @@ class QwenASREngine:
                         skipped_by_vad=True,
                         full_text=total_full_text if is_last else "",
                     )
+                    setattr(chunk_result, "_chunk_source", chunk_source)
+                    setattr(chunk_result, "_skip_reason", "short_speech")
                     if is_last:
-                        t_total = time.time() - t_main_start
-                        if self.verbose:
-                            self._print_stats(stats, total_duration, t_total)
-                        stats["audio_duration"] = total_duration
-                        setattr(chunk_result, "_stats", stats)
-                        setattr(chunk_result, "_align_items", [])
+                        _set_final_stats(chunk_result)
                     yield chunk_result
                     continue
+
+                if vad_mode and chunk_source == "fallback":
+                    speech_sec = end_sec - start_sec
 
                 if vad_mode:
                     # VAD 模式：直接按实际语音长度编码，无需补零
@@ -931,7 +982,7 @@ class QwenASREngine:
                         f"[分片 {i}] 检测到幻觉输出，已丢弃 | "
                         f"原文: {res.text[:50]}{'...' if len(res.text) > 50 else ''}"
                     )
-                    stats["vad_skipped_chunks"] += 1
+                    _record_skip(i, start_sec, end_sec, "hallucination")
                     chunk_result = StreamChunkResult(
                         segment_idx=i,
                         text="",
@@ -941,13 +992,10 @@ class QwenASREngine:
                         skipped_by_vad=True,
                         full_text=total_full_text if is_last else "",
                     )
+                    setattr(chunk_result, "_chunk_source", chunk_source)
+                    setattr(chunk_result, "_skip_reason", "hallucination")
                     if is_last:
-                        t_total = time.time() - t_main_start
-                        if self.verbose:
-                            self._print_stats(stats, total_duration, t_total)
-                        stats["audio_duration"] = total_duration
-                        setattr(chunk_result, "_stats", stats)
-                        setattr(chunk_result, "_align_items", [])
+                        _set_final_stats(chunk_result)
                     yield chunk_result
                     continue
 
@@ -1011,12 +1059,9 @@ class QwenASREngine:
                     prefill_time=res.t_prefill,
                 )
                 setattr(chunk_result, "_align_items", chunk_aligned_items)
+                setattr(chunk_result, "_chunk_source", chunk_source)
                 if is_last:
-                    t_total = time.time() - t_main_start
-                    if self.verbose:
-                        self._print_stats(stats, total_duration, t_total)
-                    stats["audio_duration"] = total_duration
-                    setattr(chunk_result, "_stats", stats)
+                    _set_final_stats(chunk_result)
 
                 yield chunk_result
 
@@ -1035,8 +1080,9 @@ class QwenASREngine:
                     full_text=total_full_text if is_last else "",
                 )
                 setattr(chunk_result, "_align_items", [])
+                setattr(chunk_result, "_chunk_source", chunk_source)
+                setattr(chunk_result, "_skip_reason", "exception")
                 if is_last:
-                    t_total = time.time() - t_main_start
                     stats["audio_duration"] = total_duration
                     setattr(chunk_result, "_stats", stats)
                 yield chunk_result

@@ -304,6 +304,7 @@ class QwenVADEngine:
         merge_gap_sec: float = 1.0,
         context_pre_sec: float = 0.2,
         context_post_sec: float = 0.3,
+        protect_long_gaps: bool = True,
     ) -> list:
         """
         根据 VAD 时间戳构建对齐语音边界的音频分片列表（VADChunk）。
@@ -313,31 +314,65 @@ class QwenVADEngine:
           2. 贪心打包：在不超过 max_span_sec 的前提下，将连续语音段组合为一个
              分片；每个分片在首段前补 context_pre_sec、末段后补 context_post_sec
           3. 在语音分片之间插入静音分片，使输出完整覆盖 0 ~ total_dur 全域
-
-        Args:
-            timestamps:       VAD 检测到的语音区间列表 [(start, end), ...]
-            total_dur:        音频总时长（秒）
-            max_span_sec:     单个分片的最大时间跨度（秒），默认 30s
-            merge_gap_sec:    小于此间隔的相邻段自动合并（秒），默认 0.5s
-            context_pre_sec:  每个分片首段前的预留缓冲（秒），默认 0.2s
-            context_post_sec: 每个分片末段后的预留缓冲（秒），默认 0.3s
-
-        Returns:
-            List[VADChunk]，按时间顺序排列；
-            has_speech=False 的分片代表静音区，用于进度上报和跳过 ASR。
+          4. 超过 max_safe_skip_sec 的静音分片会被拆成 fallback 分片送 ASR 复核
         """
         from .schema import VADChunk
 
+        def _renumber(chunks: list) -> list:
+            for idx, chunk in enumerate(chunks):
+                chunk.idx = idx
+            return chunks
+
+        def _build_silence_chunks(start: float, end: float) -> list:
+            if end <= start:
+                return []
+            span = end - start
+            max_safe_skip = self.config.max_safe_skip_sec
+            if not protect_long_gaps or span <= max_safe_skip:
+                return [
+                    VADChunk(
+                        idx=0,
+                        start_sec=start,
+                        end_sec=end,
+                        has_speech=False,
+                        source="silence",
+                        skip_reason="vad_silence",
+                    )
+                ]
+
+            chunks = []
+            cursor = start
+            while cursor < end:
+                chunk_end = min(cursor + max_span_sec, end)
+                chunks.append(
+                    VADChunk(
+                        idx=0,
+                        start_sec=cursor,
+                        end_sec=chunk_end,
+                        has_speech=True,
+                        source="fallback",
+                    )
+                )
+                cursor = chunk_end
+            return chunks
+
         if not timestamps:
-            return [VADChunk(idx=0, start_sec=0.0, end_sec=total_dur, has_speech=False)]
+            return _renumber(_build_silence_chunks(0.0, total_dur))
 
         # Step 1: 合并近邻语音段
         merged: List[List[float]] = []
         for s, e in sorted(timestamps):
+            s = max(0.0, min(float(s), total_dur))
+            e = max(s, min(float(e), total_dur))
+            if e <= s:
+                continue
             if merged and s - merged[-1][1] < merge_gap_sec:
                 merged[-1][1] = max(merged[-1][1], e)
             else:
                 merged.append([s, e])
+
+        if not merged:
+            return _renumber(_build_silence_chunks(0.0, total_dur))
 
         # Step 2: 贪心打包 → speech_chunks = [(chunk_start, chunk_end, segs), ...]
         speech_chunks: list = []
@@ -352,9 +387,7 @@ class QwenVADEngine:
                 chunk_start_sec = c_start
                 chunk_segs = [(raw_s, raw_e)]
             else:
-                # 加入当前段后是否超限？
                 if c_end - chunk_start_sec > max_span_sec:
-                    # Flush 当前分片
                     last_end = min(total_dur, chunk_segs[-1][1] + context_post_sec)
                     speech_chunks.append((chunk_start_sec, last_end, list(chunk_segs)))
                     chunk_start_sec = c_start
@@ -366,44 +399,29 @@ class QwenVADEngine:
             last_end = min(total_dur, chunk_segs[-1][1] + context_post_sec)
             speech_chunks.append((chunk_start_sec, last_end, list(chunk_segs)))
 
-        # Step 3: 插入静音分片，完整覆盖 [0, total_dur]
+        # Step 3: 插入静音/fallback 分片，完整覆盖 [0, total_dur]
         result: list = []
         cursor = 0.0
 
         for cs, ce, segs in speech_chunks:
-            # 前置静音（间隔 > 0.5s 才记录，避免极短噪声分片）
             if cs > cursor + 0.5:
-                result.append(
-                    VADChunk(
-                        idx=len(result),
-                        start_sec=cursor,
-                        end_sec=cs,
-                        has_speech=False,
-                    )
-                )
+                result.extend(_build_silence_chunks(cursor, cs))
             result.append(
                 VADChunk(
-                    idx=len(result),
+                    idx=0,
                     start_sec=cs,
                     end_sec=ce,
                     has_speech=True,
                     speech_segments=segs,
+                    source="vad",
                 )
             )
             cursor = ce
 
-        # 尾部静音
         if cursor < total_dur - 0.5:
-            result.append(
-                VADChunk(
-                    idx=len(result),
-                    start_sec=cursor,
-                    end_sec=total_dur,
-                    has_speech=False,
-                )
-            )
+            result.extend(_build_silence_chunks(cursor, total_dur))
 
-        return result
+        return _renumber(result)
 
     # ──────────────────────────────────────────────────────────────────
 

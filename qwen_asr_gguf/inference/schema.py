@@ -111,6 +111,10 @@ class VADConfig:
     chunk_max_frame: int = 30000  # 单分片最大帧数 (300s)
     # 控制参数：仅对超过此时长的片段启用 VAD 前置过滤 (秒)
     vad_min_duration: float = 10.0
+    # 长静音保护：VAD 阴性区间超过该时长时，切成 fallback 片段送 ASR 复核
+    max_safe_skip_sec: float = 60.0
+    # 长音频 VAD 语音占比低于该值时，认为 VAD 输出过稀疏并回退到固定分片
+    min_speech_coverage: float = 0.02
 
 
 @dataclass
@@ -145,6 +149,8 @@ class VADChunk:
     end_sec: float  # 在原始音频中的结束秒
     has_speech: bool  # 是否含有语音
     speech_segments: List[Tuple[float, float]] = field(default_factory=list)
+    source: str = "vad"  # vad | silence | fallback | fixed
+    skip_reason: str = ""
     # speech_segments: VAD 检测到的语音段列表 [(start_sec, end_sec), ...]，坐标相对于原始音频
 
     @property

@@ -127,6 +127,7 @@ async def transcribe_stream(
     empty_count = 0
     heartbeat_count = 0
     audio_duration = 0.0
+    vad_stats = None
 
     async def _safe_anext(aiter):
         """安全获取下一个元素，用哨兵替代 StopAsyncIteration"""
@@ -181,6 +182,16 @@ async def transcribe_stream(
             if chunk.is_last:
                 stats = getattr(chunk, "_stats", {})
                 audio_duration = stats.get("audio_duration", 0.0)
+                vad_stats = {
+                    "speech_coverage": stats.get("vad_speech_coverage", 0.0),
+                    "speech_chunks": stats.get("vad_speech_chunks", 0),
+                    "silence_chunks": stats.get("vad_silence_chunks", 0),
+                    "fallback_chunks": stats.get("vad_fallback_chunks", 0),
+                    "longest_skipped_span": round(
+                        stats.get("vad_longest_skipped_span", 0.0), 3
+                    ),
+                    "sparse_fallback": stats.get("vad_sparse_fallback", False),
+                }
 
             # 无语音内容片段直接跳过
             if not chunk.text or not chunk.text.strip():
@@ -224,6 +235,7 @@ async def transcribe_stream(
                     "duration": round(audio_duration, 2),
                     "chunks_total": chunk_count,
                     "chunks_empty": empty_count,
+                    "vad": vad_stats,
                 },
                 ensure_ascii=False,
             ),

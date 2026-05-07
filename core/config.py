@@ -53,7 +53,7 @@ def __build_parser_args() -> argparse.Namespace:
     parser.add_argument(
         "--web_secret_key", type=str, default="qwen3-asr-token", help="接口请求秘钥"
     )
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="服务启动IP地址")
+    parser.add_argument("--host", type=str, default="localhost", help="服务启动IP地址")
     parser.add_argument("--port", type=int, default=8002, help="服务启动端口")
     parser.add_argument(
         "--base_url", type=str, default="/qwen3-asr/api/v1", help="接口基础路径"
@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     VAD_MERGE_SILENCE_FRAME: int = 30  # 合并 <300ms 间隔的相邻语音段
     VAD_EXTEND_SPEECH_FRAME: int = 8  # 语音边界向外扩展 80ms，捕捉词首/尾音
     VAD_CHUNK_MAX_FRAME: int = 30000
+    VAD_MAX_SAFE_SKIP_SEC: float = 60.0
+    VAD_MIN_SPEECH_COVERAGE: float = 0.02
 
     # Upload settings
     UPLOAD_DIR: str = "./uploads"
