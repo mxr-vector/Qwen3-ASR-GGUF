@@ -132,22 +132,21 @@ bash run.sh start
 # 开发环境
 ENVIRONMENT=development uv run infer.py
 ```
-> 
-> 依赖可能写得不是那么全，缺啥就装啥呗，没有需要自己编译的
 
 从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases) 下载预编译二进制，将动态库文件放入 `qwen_asr_gguf/bin/`：
 
 | 平台 | 下载文件 |
 |------|----------|
 | **Windows** | `llama-bXXXX-bin-win-vulkan-x64.zip` |
-| **Linux**| `llama-b8157-bin-ubuntu-vulkan-x64.tar.gz` |
+| **Linux**| `llama-bxxxx-bin-ubuntu-vulkan-x64.tar.gz` |
 
 ### 2. 下载模型
 
 
 #### 2.1 下载模型
 
-到 [Models Release](https://github.com/HaujetZhao/Qwen3-ASR-GGUF/releases/tag/models) 下载已经转换好的模型打包文件，下载后解压到 `models` 文件夹。
+到 [Models-Qwen Release](https://github.com/HaujetZhao/Qwen3-ASR-GGUF/releases/tag/models) 下载已经转换好的模型打包文件，下载后解压到 `models/qwen` 文件夹。
+到 [FireRedVAD](https://www.modelscope.cn/models/FireRedTeam/FireRedVAD/files) 下载已经转换好的模型打包文件，下载后解压到 `models` 文件夹。
 
 ASR 模型有 0.6B 和 1.7B 的，后者精度更高，但慢些。
 
