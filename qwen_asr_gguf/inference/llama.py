@@ -54,14 +54,24 @@ class llama_model_params(ctypes.Structure):
     ]
 
 
+# ⚠️ 本结构体匹配 llama.cpp b9672 (commit 74ade5274) 的实际二进制。
+# ref/llama.cpp/include/llama.h 可能是旧版快照，缺少
+# n_rs_seq/n_outputs_max/ctx_type/ctx_other。修改前务必用当前
+# libllama.so 对应的 llama.h 实测验证字段偏移。
 class llama_context_params(ctypes.Structure):
     _fields_ = [
         ("n_ctx", ctypes.c_uint32),
         ("n_batch", ctypes.c_uint32),
         ("n_ubatch", ctypes.c_uint32),
         ("n_seq_max", ctypes.c_uint32),
+        # b9672 在 n_seq_max 后新增了 n_rs_seq、n_outputs_max、ctx_type。
+        # ctypes 结构体必须与 llama.h 完全一致，否则 n_threads 等字段会写到错误偏移，
+        # 轻则出现 “n_rs_seq=8 requested”，重则 llama_init_from_model 段错误。
+        ("n_rs_seq", ctypes.c_uint32),
+        ("n_outputs_max", ctypes.c_uint32),
         ("n_threads", ctypes.c_int32),
         ("n_threads_batch", ctypes.c_int32),
+        ("ctx_type", ctypes.c_int32),
         ("rope_scaling_type", ctypes.c_int32),
         ("pooling_type", ctypes.c_int32),
         ("attention_type", ctypes.c_int32),
@@ -88,6 +98,7 @@ class llama_context_params(ctypes.Structure):
         ("kv_unified", ctypes.c_bool),
         ("samplers", ctypes.POINTER(ctypes.c_void_p)),
         ("n_samplers", ctypes.c_size_t),
+        ("ctx_other", ctypes.c_void_p),
     ]
 
 

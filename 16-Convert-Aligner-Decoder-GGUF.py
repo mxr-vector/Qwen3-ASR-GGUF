@@ -1,17 +1,21 @@
 # coding=utf-8
 import sys
-import os
 import json
 from pathlib import Path
 
+from export_config import EXPORT_DIR
+
 # 1. 路径设置
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-CONVERT_LIB_DIR = os.path.join(PROJECT_ROOT, "qwen_asr_gguf", 'export')
-MODEL_DIR = os.path.join(PROJECT_ROOT, "models", "aligner_decoder_hf")
+PROJECT_ROOT = Path(__file__).parent.absolute()
+CONVERT_LIB_DIR = PROJECT_ROOT / "qwen_asr_gguf" / "export"
+EXPORT_PATH = Path(EXPORT_DIR)
+if not EXPORT_PATH.is_absolute():
+    EXPORT_PATH = PROJECT_ROOT / EXPORT_PATH
+MODEL_DIR = EXPORT_PATH / "aligner_decoder_hf"
 
 # 确保可以导入转换库
-if CONVERT_LIB_DIR not in sys.path:
-    sys.path.insert(0, CONVERT_LIB_DIR)
+if str(CONVERT_LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(CONVERT_LIB_DIR))
 
 try:
     import convert_hf_to_gguf
@@ -52,7 +56,7 @@ def main():
     print(f"--- 正在将 Qwen3-ForcedAligner LLM 转换为 GGUF ---")
     print(f"输入目录: {MODEL_DIR}")
 
-    if not os.path.exists(os.path.join(MODEL_DIR, "config.json")):
+    if not (MODEL_DIR / "config.json").exists():
         print(f"❌ 错误: 在 {MODEL_DIR} 中未找到 config.json")
         return
 
@@ -62,14 +66,15 @@ def main():
     ]
 
     for out_type, suffix in tasks:
-        output_file = os.path.join(PROJECT_ROOT, "models", f"qwen3_aligner_llm.{suffix}.gguf")
+        output_file = EXPORT_PATH / f"qwen3_aligner_llm.{suffix}.gguf"
+        output_file.parent.mkdir(parents=True, exist_ok=True)
         print(f"\n--- 正在转换 {out_type} 格式 -> {output_file} ---")
 
         # 3. 准备转换器参数
         sys.argv = [
             "convert_hf_to_gguf.py",
-            MODEL_DIR,
-            "--outfile", output_file,
+            str(MODEL_DIR),
+            "--outfile", str(output_file),
             "--outtype", out_type,
             "--verbose"
         ]

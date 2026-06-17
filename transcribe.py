@@ -61,7 +61,7 @@ def check_model_files(config: ASREngineConfig):
         console.print("\n[bold red]错误：找不到以下所需模型文件：[/bold red]")
         for f in missing_files:
             console.print(f"  - {f}")
-        console.print("\n[bold yellow]请到以下链接下载模型文件，并解压到 model 目录：[/bold yellow]")
+        console.print("\n[bold yellow]请到以下链接下载模型文件，并解压到 models 目录：[/bold yellow]")
         console.print("[blue]https://github.com/HaujetZhao/Qwen3-ASR-GGUF/releases/tag/models[/blue]\n")
         raise typer.Exit(code=1)
 
@@ -70,7 +70,7 @@ def transcribe(
     files: List[Path] = typer.Argument(..., help="要转录的音频文件列表"),
     
     # 组 1: 模型与硬件
-    model_dir: str = typer.Option(str(PROJ_DIR / "model"), "--model-dir", "-m", help="模型权重根目录", rich_help_panel="模型配置"),
+    model_dir: str = typer.Option(str(PROJ_DIR / "models"), "--model-dir", "-m", help="模型权重根目录", rich_help_panel="模型配置"),
     precision: str = typer.Option("int4", "--prec", help="编码器精度: fp32, fp16, int8, int4", rich_help_panel="模型配置"),
     timestamp: bool = typer.Option(True, "--timestamp/--no-ts", help="是否开启时间戳引擎", rich_help_panel="模型配置"),
     use_gpu: bool = typer.Option(True, "--gpu/--no-gpu", help="是否使用 GPU 加速 (自动检测 CUDA/ROCM/DirectML)", rich_help_panel="模型配置"),
