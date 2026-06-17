@@ -78,10 +78,12 @@ class ASRService:
         )
         logger.debug(
             "引擎配置 - chunk_size: %.1f | memory_num: %s | "
-            "dynamic_chunk_threshold: %.1f | vad_threshold: %.2f | aligner: %s",
+            "dynamic_chunk_threshold: %.1f | vad_mode: %s | "
+            "vad_threshold: %.2f | aligner: %s",
             config.chunk_size,
             config.memory_num,
             config.dynamic_chunk_threshold,
+            config.vad_config.vad_mode if config.vad_config else "off",
             config.vad_config.speech_threshold if config.vad_config else 0.0,
             config.enable_aligner,
         )
@@ -98,6 +100,7 @@ class ASRService:
         vad_config = VADConfig(
             model_dir=settings.VAD_MODEL_DIR,
             use_gpu=settings.VAD_USE_GPU,
+            vad_mode=settings.VAD_MODE,
             smooth_window_size=settings.VAD_SMOOTH_WINDOW_SIZE,
             speech_threshold=settings.VAD_SPEECH_THRESHOLD,
             min_speech_frame=settings.VAD_MIN_SPEECH_FRAME,
@@ -108,6 +111,12 @@ class ASRService:
             chunk_max_frame=settings.VAD_CHUNK_MAX_FRAME,
             vad_min_duration=settings.VAD_MIN_DURATION,
             max_safe_skip_sec=settings.VAD_MAX_SAFE_SKIP_SEC,
+            balanced_max_safe_skip_sec=settings.VAD_BALANCED_MAX_SAFE_SKIP_SEC,
+            speed_max_safe_skip_sec=settings.VAD_SPEED_MAX_SAFE_SKIP_SEC,
+            context_pre_sec=settings.VAD_CONTEXT_PRE_SEC,
+            context_post_sec=settings.VAD_CONTEXT_POST_SEC,
+            min_speech_skip_sec=settings.VAD_MIN_SPEECH_SKIP_SEC,
+            speed_min_speech_skip_sec=settings.VAD_SPEED_MIN_SPEECH_SKIP_SEC,
             min_speech_coverage=settings.VAD_MIN_SPEECH_COVERAGE,
         )
 

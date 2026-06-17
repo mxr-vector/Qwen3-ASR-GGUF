@@ -46,16 +46,15 @@ from qwen_asr_gguf.inference import (
 )
 from qwen_asr_gguf.inference import exporters
 
-
 # ─── 配置区 ───────────────────────────────────────────────────────────────────
 
-AUDIO_PATH = "datasets/yn6.wav"
-CONTEXT = ""
+AUDIO_PATH = os.getenv("DEMO_AUDIO_PATH", "datasets/yn6.wav")
+CONTEXT = os.getenv("DEMO_CONTEXT", "")
 
 # 演示模式：
 #   "offline"  - 离线转写（等待全部处理完毕后一次性输出）
 #   "stream"   - 流式转写（逐分片实时打印，模拟 SSE 场景）
-DEMO_MODE = "offline"
+DEMO_MODE = os.getenv("DEMO_MODE", "offline")
 
 # VAD 模型路径（FireRedVAD 非流式版本）
 # VAD 由 dynamic_chunk_threshold 自动控制：音频 > 阈值时延迟加载
@@ -77,7 +76,13 @@ def build_config() -> ASREngineConfig:
     vad_cfg = VADConfig(
         model_dir=VAD_MODEL_DIR,
         use_gpu=False,  # VAD 模型较小，CPU 即可满足实时需求
-        speech_threshold=0.35,  # 初始语音帧判定阈值（自适应算法会动态调整）
+        vad_mode="recall",  # 召回优先：中长 VAD 阴性区间会回退给 ASR 复核
+        speech_threshold=0.30,  # 初始语音帧判定阈值（自适应算法只允许降低）
+        max_safe_skip_sec=3.0,  # 超过 3s 的 VAD 阴性区间不直接跳过，避免丢句子
+        context_pre_sec=0.6,
+        context_post_sec=0.8,
+        min_speech_skip_sec=0.0,  # 不因语音短而跳过“嗯/对/好”等短句
+        speed_min_speech_skip_sec=0.3,
     )
 
     return ASREngineConfig(

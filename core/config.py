@@ -104,7 +104,8 @@ class Settings(BaseSettings):
     # VAD 由 ASR_DYNAMIC_CHUNK_THRESHOLD 自动触发（音频 > 阈值时延迟加载），无需手动开关
     VAD_MODEL_DIR: str = "./models/FireRedVAD/VAD"
     VAD_USE_GPU: bool = False
-    VAD_SPEECH_THRESHOLD: float = 0.35  # 初始帧语音概率阈值（自适应算法会动态调整）
+    VAD_MODE: str = "recall"  # recall=召回优先，balanced=折中，speed=速度优先
+    VAD_SPEECH_THRESHOLD: float = 0.30  # 初始帧语音概率阈值（自适应算法只允许降低）
     VAD_MIN_DURATION: float = 10.0
     VAD_SMOOTH_WINDOW_SIZE: int = 5
     VAD_MIN_SPEECH_FRAME: int = 15  # 150ms 最短语音段，兼顾短促词语
@@ -113,7 +114,13 @@ class Settings(BaseSettings):
     VAD_MERGE_SILENCE_FRAME: int = 30  # 合并 <300ms 间隔的相邻语音段
     VAD_EXTEND_SPEECH_FRAME: int = 8  # 语音边界向外扩展 80ms，捕捉词首/尾音
     VAD_CHUNK_MAX_FRAME: int = 30000
-    VAD_MAX_SAFE_SKIP_SEC: float = 60.0
+    VAD_MAX_SAFE_SKIP_SEC: float = 3.0
+    VAD_BALANCED_MAX_SAFE_SKIP_SEC: float = 8.0
+    VAD_SPEED_MAX_SAFE_SKIP_SEC: float = 60.0
+    VAD_CONTEXT_PRE_SEC: float = 0.6
+    VAD_CONTEXT_POST_SEC: float = 0.8
+    VAD_MIN_SPEECH_SKIP_SEC: float = 0.0
+    VAD_SPEED_MIN_SPEECH_SKIP_SEC: float = 0.3
     VAD_MIN_SPEECH_COVERAGE: float = 0.02
 
     # Upload settings

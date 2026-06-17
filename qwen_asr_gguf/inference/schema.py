@@ -100,9 +100,11 @@ class VADConfig:
 
     model_dir: str = "models/FireRedVAD/VAD"
     use_gpu: bool = False
-    # FireRedVadConfig 参数 (生产级默认值)
+    # VAD 策略：recall=召回优先，balanced=折中，speed=速度优先
+    vad_mode: str = "recall"
+    # FireRedVadConfig 参数 (召回优先默认值)
     smooth_window_size: int = 5
-    speech_threshold: float = 0.35  # 初始阈值，自适应检测会动态调整
+    speech_threshold: float = 0.30  # 初始阈值，自适应检测只允许降低以保护召回
     min_speech_frame: int = 15  # 150ms 最短语音段
     max_speech_frame: int = 3000  # 30s 单语音段上限
     min_silence_frame: int = 40  # 400ms 最短静音，避免句内割裂
@@ -111,10 +113,26 @@ class VADConfig:
     chunk_max_frame: int = 30000  # 单分片最大帧数 (300s)
     # 控制参数：仅对超过此时长的片段启用 VAD 前置过滤 (秒)
     vad_min_duration: float = 10.0
-    # 长静音保护：VAD 阴性区间超过该时长时，切成 fallback 片段送 ASR 复核
-    max_safe_skip_sec: float = 60.0
+    # 召回优先保护：VAD 阴性区间超过该时长时，切成 fallback 片段送 ASR 复核
+    max_safe_skip_sec: float = 3.0
+    # balanced/speed 模式下的默认安全跳过阈值，保留可选的高吞吐行为
+    balanced_max_safe_skip_sec: float = 8.0
+    speed_max_safe_skip_sec: float = 60.0
+    # VAD 语音分片边界补偿，防止句首/句尾弱音被裁掉
+    context_pre_sec: float = 0.6
+    context_post_sec: float = 0.8
+    # VAD 语音过短跳过阈值；0 表示不因短语音而跳过
+    min_speech_skip_sec: float = 0.0
+    # speed 模式保留旧行为：极短语音直接跳过以换取更低幻觉/更高吞吐
+    speed_min_speech_skip_sec: float = 0.3
     # 长音频 VAD 语音占比低于该值时，认为 VAD 输出过稀疏并回退到固定分片
     min_speech_coverage: float = 0.02
+
+    def __post_init__(self):
+        mode = self.vad_mode.strip().lower()
+        if mode not in {"recall", "balanced", "speed"}:
+            raise ValueError("VADConfig.vad_mode 必须是 recall、balanced 或 speed")
+        object.__setattr__(self, "vad_mode", mode)
 
 
 @dataclass

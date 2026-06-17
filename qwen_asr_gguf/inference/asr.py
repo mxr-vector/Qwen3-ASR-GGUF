@@ -780,6 +780,8 @@ class QwenASREngine:
                     timestamps=vad_result.timestamps,
                     total_dur=total_duration,
                     max_span_sec=chunk_size_sec,
+                    context_pre_sec=vad_config.context_pre_sec,
+                    context_post_sec=vad_config.context_post_sec,
                 )
 
             stats["vad_speech_chunks"] = sum(
@@ -875,15 +877,19 @@ class QwenASREngine:
                     yield chunk_result
                     continue
 
-                # ── 短语音跳过（VAD 模式）───────────────────────────────
-                # 语音长度 <0.3s 的分片几乎无有效信息，LLM 易在极短输入
-                # 上产生幻觉文本（如随机数字、重复字符），直接跳过。
-                if vad_mode and speech_sec < 0.3:
+                # ── 短语音跳过（可配置）─────────────────────────────────
+                # recall 默认不因语音短而跳过，避免丢失“嗯/对/好”等短句。
+                vad_config = self.config.vad_config
+                if vad_config.vad_mode == "speed":
+                    min_speech_skip_sec = vad_config.speed_min_speech_skip_sec
+                else:
+                    min_speech_skip_sec = vad_config.min_speech_skip_sec
+                if vad_mode and min_speech_skip_sec > 0 and speech_sec < min_speech_skip_sec:
                     _record_skip(i, start_sec, end_sec, "short_speech")
                     if self.verbose:
                         logger.debug(
                             f"  [VAD] 分片 #{i:02d} 语音过短 "
-                            f"({speech_sec:.2f}s < 0.3s)，跳过"
+                            f"({speech_sec:.2f}s < {min_speech_skip_sec:.2f}s)，跳过"
                         )
                     chunk_result = StreamChunkResult(
                         segment_idx=i,

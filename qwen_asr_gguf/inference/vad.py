@@ -191,13 +191,20 @@ class QwenVADEngine:
             return result
 
         initial_threshold = self.config.speech_threshold
-        # 取 30% 分位数，限制在 [0.25, 0.65] 安全区间
-        adaptive_threshold = float(np.clip(np.percentile(speech_probs, 30), 0.25, 0.65))
+        # 取 30% 分位数，限制在 [0.20, 0.65] 安全区间。
+        # recall/balanced 模式下只允许降低阈值，避免自适应逻辑牺牲召回。
+        adaptive_threshold = float(np.clip(np.percentile(speech_probs, 30), 0.20, 0.65))
+        if self.config.vad_mode in {"recall", "balanced"}:
+            adaptive_threshold = min(adaptive_threshold, initial_threshold)
 
-        # 阈值变化不足 0.05 → 无需重新分割
-        if abs(adaptive_threshold - initial_threshold) < 0.05:
+        # recall/balanced 模式下，即使小幅降低阈值也重新分割，优先保护召回。
+        # speed 模式保留旧的 0.05 抖动过滤，避免为微小差异多做处理。
+        if adaptive_threshold >= initial_threshold or (
+            self.config.vad_mode == "speed"
+            and abs(adaptive_threshold - initial_threshold) < 0.05
+        ):
             logger.debug(
-                f"[VAD] 自适应阈值与初始值接近 "
+                f"[VAD] 自适应阈值未带来有效降低 "
                 f"({adaptive_threshold:.3f} vs {initial_threshold:.3f})，保持原结果"
             )
             return result
@@ -302,8 +309,8 @@ class QwenVADEngine:
         total_dur: float,
         max_span_sec: float = 30.0,
         merge_gap_sec: float = 1.0,
-        context_pre_sec: float = 0.2,
-        context_post_sec: float = 0.3,
+        context_pre_sec: Optional[float] = None,
+        context_post_sec: Optional[float] = None,
         protect_long_gaps: bool = True,
     ) -> list:
         """
@@ -314,9 +321,14 @@ class QwenVADEngine:
           2. 贪心打包：在不超过 max_span_sec 的前提下，将连续语音段组合为一个
              分片；每个分片在首段前补 context_pre_sec、末段后补 context_post_sec
           3. 在语音分片之间插入静音分片，使输出完整覆盖 0 ~ total_dur 全域
-          4. 超过 max_safe_skip_sec 的静音分片会被拆成 fallback 分片送 ASR 复核
+          4. 超过当前 VAD 策略安全跳过阈值的静音分片会被拆成 fallback 分片送 ASR 复核
         """
         from .schema import VADChunk
+
+        if context_pre_sec is None:
+            context_pre_sec = self.config.context_pre_sec
+        if context_post_sec is None:
+            context_post_sec = self.config.context_post_sec
 
         def _renumber(chunks: list) -> list:
             for idx, chunk in enumerate(chunks):
@@ -327,7 +339,14 @@ class QwenVADEngine:
             if end <= start:
                 return []
             span = end - start
-            max_safe_skip = self.config.max_safe_skip_sec
+            vad_mode = self.config.vad_mode
+            if vad_mode == "speed":
+                max_safe_skip = self.config.speed_max_safe_skip_sec
+            elif vad_mode == "balanced":
+                max_safe_skip = self.config.balanced_max_safe_skip_sec
+            else:
+                max_safe_skip = self.config.max_safe_skip_sec
+
             if not protect_long_gaps or span <= max_safe_skip:
                 return [
                     VADChunk(
