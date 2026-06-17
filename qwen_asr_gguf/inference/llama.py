@@ -494,6 +494,13 @@ class LlamaModel:
     def __init__(self, path, n_gpu_layers=-1):
         self.ptr = load_model(path, n_gpu_layers=n_gpu_layers)
 
+        if not self.ptr:
+            raise RuntimeError(
+                f"GGUF 模型加载失败: {path}\n"
+                f"可能原因: 1) 模型文件不存在  2) GPU 显存不足 (n_gpu_layers={n_gpu_layers})\n"
+                f"建议: 尝试设置 use_gpu=False 或减少 n_gpu_layers"
+            )
+
         self.vocab = llama_model_get_vocab(self.ptr)
         self.n_embd = llama_model_n_embd(self.ptr)
         self.eos_token = llama_vocab_eos(self.vocab)

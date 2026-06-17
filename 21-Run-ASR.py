@@ -48,7 +48,7 @@ from qwen_asr_gguf.inference import exporters
 
 # ─── 配置区 ───────────────────────────────────────────────────────────────────
 
-AUDIO_PATH = os.getenv("DEMO_AUDIO_PATH", "datasets/yn6.wav")
+AUDIO_PATH = os.getenv("DEMO_AUDIO_PATH", "uploads/1.wav")
 CONTEXT = os.getenv("DEMO_CONTEXT", "")
 
 # 演示模式：
@@ -184,7 +184,19 @@ def main():
     config = build_config()
 
     t0 = time.time()
-    engine = QwenASREngine(config=config)
+    try:
+        engine = QwenASREngine(config=config)
+    except Exception as e:
+        print(f"\n引擎初始化失败: {e}")
+        print("\n排查建议:")
+        print("  1. 检查 GPU 显存是否充足: nvidia-smi")
+        print("  2. 尝试关闭 GPU: 设置 use_gpu=False")
+        print("  3. 检查模型文件是否存在于 models/ 目录下")
+        import traceback
+
+        traceback.print_exc()
+        return
+
     print(f"引擎初始化: {time.time() - t0:.1f}s")
 
     try:
