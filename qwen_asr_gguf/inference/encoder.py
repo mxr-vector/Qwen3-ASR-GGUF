@@ -123,6 +123,10 @@ class QwenAudioEncoder:
         self.active_gpu = False
         self.active_provider = "CPUExecutionProvider"
         self.active_dml = False
+        self.requested_providers = ["CPUExecutionProvider"]
+        self.frontend_providers = ["CPUExecutionProvider"]
+        self.backend_providers = ["CPUExecutionProvider"]
+        self.last_profile = {}
         self.pad_to = pad_to
         # 预计算目标长度：每 1 秒对应 13 帧 hidden_states（仅固定形状模式使用）
         self.h_target_len = (self.pad_to * 13) if self.pad_to else 0
@@ -163,20 +167,31 @@ class QwenAudioEncoder:
 
             providers = [selected_provider] if selected_provider == "CPUExecutionProvider" else [selected_provider, "CPUExecutionProvider"]
 
-        self.active_provider = providers[0]
-        self.active_gpu = self.active_provider != "CPUExecutionProvider"
-        self.active_dml = self.active_provider == "DmlExecutionProvider"
+        self.requested_providers = list(providers)
+
+        # 加载两个 Session。注意：ONNX Runtime 可能因 CUDA/cuDNN 等依赖缺失
+        # 在创建 Session 时静默回退到 CPU，所以下面的 active_* 状态必须
+        # 基于 get_providers() 回读的实际 Provider，而不能只看 requested_providers。
+        self.sess_fe = ort.InferenceSession(frontend_path, sess_options=sess_opts, providers=providers)
+        self.sess_be = ort.InferenceSession(backend_path, sess_options=sess_opts, providers=providers)
+
+        self.frontend_providers = self.sess_fe.get_providers()
+        self.backend_providers = self.sess_be.get_providers()
+        actual_providers = self.backend_providers or self.frontend_providers or ["CPUExecutionProvider"]
+        self.active_provider = actual_providers[0]
+        all_actual_providers = self.frontend_providers + self.backend_providers
+        self.active_gpu = any(p != "CPUExecutionProvider" for p in all_actual_providers)
+        self.active_dml = any(p == "DmlExecutionProvider" for p in all_actual_providers)
 
         if self.verbose:
             print(f"--- [Encoder] 加载 Split ONNX 模型 (GPU: {self.active_gpu}, Provider: {self.active_provider}, Pad: {pad_to}s) ---")
+            print(f"--- [Encoder] 请求 Provider: {', '.join(self.requested_providers)} ---")
+            print(f"--- [Encoder] Frontend 实际 Provider: {', '.join(self.frontend_providers)} ---")
+            print(f"--- [Encoder] Backend 实际 Provider: {', '.join(self.backend_providers)} ---")
             if use_gpu and not self.active_gpu:
-                print(f"--- [Encoder] 未检测到可用 GPU Provider，已回退到 CPU (Available: {available}) ---")
+                print(f"--- [Encoder] 请求 GPU 但实际回退到 CPU，请检查 CUDA/cuDNN/ORT 依赖 (Available: {available}) ---")
             print(f"    Frontend: {os.path.basename(frontend_path)}")
             print(f"    Backend:  {os.path.basename(backend_path)}")
-
-        # 加载两个 Session
-        self.sess_fe = ort.InferenceSession(frontend_path, sess_options=sess_opts, providers=providers)
-        self.sess_be = ort.InferenceSession(backend_path, sess_options=sess_opts, providers=providers)
 
         self.mel_extractor = FastWhisperMel()
 
@@ -267,17 +282,41 @@ class QwenAudioEncoder:
 
         # 1. 提取 Mel 特征
         # audio: (N_samples,) -> mel: (128, T)
+        t_mel = time.time()
         mel = self.mel_extractor(audio, dtype=self.input_dtype)
+        mel_time = time.time() - t_mel
 
         # 2. Frontend (Loop)
+        t_frontend = time.time()
         hidden_states = self._run_frontend(mel)
+        frontend_time = time.time() - t_frontend
 
         # 3. Backend (Transformer)
+        t_backend = time.time()
         audio_embd = self._run_backend(hidden_states)
+        backend_time = time.time() - t_backend
 
         # 4. 去除 Batch 维 -> (T, D)
         if audio_embd.ndim == 3:
             audio_embd = audio_embd[0]
 
         elapsed = time.time() - t0
+        self.last_profile = {
+            "total_time": elapsed,
+            "mel_time": mel_time,
+            "frontend_time": frontend_time,
+            "backend_time": backend_time,
+            "audio_sec": float(len(audio) / 16000),
+            "mel_frames": int(mel.shape[1]) if mel.ndim >= 2 else 0,
+            "frontend_chunks": int(np.ceil(mel.shape[1] / 100)) if mel.ndim >= 2 else 0,
+            "hidden_len": int(hidden_states.shape[1]) if hidden_states.ndim >= 2 else 0,
+            "emb_len": int(audio_embd.shape[0]) if audio_embd.ndim >= 1 else 0,
+            "requested_providers": list(self.requested_providers),
+            "frontend_providers": list(self.frontend_providers),
+            "backend_providers": list(self.backend_providers),
+            "frontend_provider": self.frontend_providers[0] if self.frontend_providers else "",
+            "backend_provider": self.backend_providers[0] if self.backend_providers else "",
+            "active_provider": self.active_provider,
+            "active_gpu": self.active_gpu,
+        }
         return audio_embd, elapsed

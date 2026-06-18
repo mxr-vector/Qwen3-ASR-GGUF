@@ -406,6 +406,23 @@ class QwenASREngine:
         if stats.get("align_time"):
             logger.debug(f"  🔹 对齐耗时       : {stats['align_time']:.3f} 秒")
         logger.debug(f"  🔹 编码耗时       : {stats['encode_time']:.3f} 秒")
+        if stats.get("encode_mel_time") or stats.get("encode_frontend_time") or stats.get("encode_backend_time"):
+            logger.debug(
+                f"    ├─ Mel          : {stats['encode_mel_time']:.3f} 秒"
+            )
+            logger.debug(
+                f"    ├─ Frontend     : {stats['encode_frontend_time']:.3f} 秒 "
+                f"({stats.get('encode_frontend_chunks', 0)} runs)"
+            )
+            logger.debug(
+                f"    └─ Backend      : {stats['encode_backend_time']:.3f} 秒"
+            )
+            logger.debug(
+                f"  🔹 ONNX Provider  : FE={stats.get('encode_frontend_provider') or 'unknown'} "
+                f"| BE={stats.get('encode_backend_provider') or 'unknown'} "
+                f"| active={stats.get('encode_active_provider') or 'unknown'} "
+                f"| gpu={stats.get('encode_active_gpu', False)}"
+            )
         logger.debug(
             f"  🔹 LLM 预填充     : {stats['prefill_time']:.3f} 秒 "
             f"({stats['prefill_tokens']} tokens, {pre_speed:.1f} tokens/s)"
@@ -468,6 +485,7 @@ class QwenASREngine:
         temperature: float = 0.0,
         rollback_num: int = 5,
         enable_aligner: bool = False,
+        disable_vad: bool = False,
     ) -> TranscribeResult:
         """
         离线转录入口：加载整段音频，处理完毕后返回完整 TranscribeResult。
@@ -492,6 +510,7 @@ class QwenASREngine:
             temperature=temperature,
             rollback_num=rollback_num,
             enable_aligner=enable_aligner,
+            disable_vad=disable_vad,
         )
 
     def transcribe_stream(
@@ -559,6 +578,7 @@ class QwenASREngine:
         temperature: float = 0.0,
         rollback_num: int = 5,
         enable_aligner: bool = False,
+        disable_vad: bool = False,
     ) -> TranscribeResult:
         """
         完整转录流水线（一次性版本）。
@@ -579,6 +599,7 @@ class QwenASREngine:
             temperature=temperature,
             rollback_num=rollback_num,
             enable_aligner=enable_aligner,
+            disable_vad=disable_vad,
         ):
             if not chunk_res.skipped_by_vad:
                 total_full_text += chunk_res.text
@@ -689,6 +710,15 @@ class QwenASREngine:
             "prefill_tokens": 0,
             "decode_tokens": 0,
             "encode_time": 0.0,
+            "encode_mel_time": 0.0,
+            "encode_frontend_time": 0.0,
+            "encode_backend_time": 0.0,
+            "encode_audio_sec": 0.0,
+            "encode_frontend_chunks": 0,
+            "encode_frontend_provider": "",
+            "encode_backend_provider": "",
+            "encode_active_provider": "",
+            "encode_active_gpu": False,
             "align_time": 0.0,
             "vad_time": 0.0,
             "vad_skipped_chunks": 0,
@@ -736,6 +766,20 @@ class QwenASREngine:
                     "reason": reason,
                 }
             )
+
+        def _accumulate_encoder_profile():
+            profile = getattr(self.encoder, "last_profile", None)
+            if not profile:
+                return
+            stats["encode_mel_time"] += profile.get("mel_time", 0.0)
+            stats["encode_frontend_time"] += profile.get("frontend_time", 0.0)
+            stats["encode_backend_time"] += profile.get("backend_time", 0.0)
+            stats["encode_audio_sec"] += profile.get("audio_sec", 0.0)
+            stats["encode_frontend_chunks"] += profile.get("frontend_chunks", 0)
+            stats["encode_frontend_provider"] = profile.get("frontend_provider", "")
+            stats["encode_backend_provider"] = profile.get("backend_provider", "")
+            stats["encode_active_provider"] = profile.get("active_provider", "")
+            stats["encode_active_gpu"] = profile.get("active_gpu", False)
 
         # ── 选择分片策略 ──────────────────────────────────────────────
         #
@@ -942,6 +986,7 @@ class QwenASREngine:
                         )
                     audio_feature, enc_time = self.encoder.encode(chunk_padded)
                 stats["encode_time"] += enc_time
+                _accumulate_encoder_profile()
 
                 # 编码后再次检查客户端状态（decode 是最耗时的步骤）
                 if cancel_event and cancel_event.is_set():

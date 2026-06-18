@@ -54,7 +54,7 @@ CONTEXT = os.getenv("DEMO_CONTEXT", "")
 # 演示模式：
 #   "offline"  - 离线转写（等待全部处理完毕后一次性输出）
 #   "stream"   - 流式转写（逐分片实时打印，模拟 SSE 场景）
-DEMO_MODE = os.getenv("DEMO_MODE", "stream")
+DEMO_MODE = os.getenv("DEMO_MODE", "offline")
 
 # 召回优先：默认关闭 VAD 动态分片，避免长音频在动态切块时漏字。
 # 如需观察 VAD 效果，可设置 DEMO_DISABLE_VAD=0。
@@ -128,6 +128,7 @@ def demo_offline(engine: QwenASREngine):
         language="Chinese",
         start_second=0,
         duration=None,  # None = 整段音频
+        disable_vad=DEMO_DISABLE_VAD,
     )
 
     print("\n转写结果:")
