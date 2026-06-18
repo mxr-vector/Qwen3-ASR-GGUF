@@ -58,6 +58,13 @@ def __build_parser_args() -> argparse.Namespace:
     parser.add_argument(
         "--base_url", type=str, default="/qwen3-asr/api/v1", help="接口基础路径"
     )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        choices=("onnx", "vllm"),
+        default="onnx",
+        help="运行时后端选择：onnx=默认 GGUF/ONNX 路线，vllm=启用独立 vLLM 转写接口",
+    )
     parser.add_argument("--configs", type=str, default="", help="配置文件路径")
 
     # 使用 parse_known_args 防止未知参数报错
@@ -75,8 +82,17 @@ class Settings(BaseSettings):
     HOST: str = args.host
     PORT: int = args.port
 
-    # Model configuration paths
+    # Model configuration paths and filenames
     MODEL_DIR: str = "./models"
+    ASR_ENCODER_FRONTEND_FN: str = "qwen3_asr_encoder_frontend.fp16.onnx"
+    ASR_ENCODER_BACKEND_FN: str = "qwen3_asr_encoder_backend.fp16.onnx"
+    ASR_LLM_FN: str = "qwen3_asr_llm.f16.gguf"
+    ALIGNER_ENCODER_FRONTEND_FN: str = "qwen3_aligner_encoder_frontend.fp16.onnx"
+    ALIGNER_ENCODER_BACKEND_FN: str = "qwen3_aligner_encoder_backend.fp16.onnx"
+    ALIGNER_LLM_FN: str = "qwen3_aligner_llm.f16.gguf"
+    VAD_MODEL_DIR: str = "./models/FireRedVAD/VAD"
+    VLLM_MODEL: str = "./models/qwen/Qwen3-ASR-1.7B"
+    VLLM_FORCED_ALIGNER: str = "./models/qwen/Qwen3-ForcedAligner-0.6B"
     DATA_DIR: str = "./datasets"
     HOTWORDS_PATH: str = "./hot-word.txt"
 
@@ -102,7 +118,6 @@ class Settings(BaseSettings):
 
     # Global VAD defaults (独立于全局 GPU 开关)
     # VAD 由 ASR_DYNAMIC_CHUNK_THRESHOLD 自动触发（音频 > 阈值时延迟加载），无需手动开关
-    VAD_MODEL_DIR: str = "./models/FireRedVAD/VAD"
     VAD_USE_GPU: bool = False
     VAD_MODE: str = "recall"  # recall=召回优先，balanced=折中，speed=速度优先
     VAD_SPEECH_THRESHOLD: float = 0.30  # 初始帧语音概率阈值（自适应算法只允许降低）
@@ -128,6 +143,9 @@ class Settings(BaseSettings):
     VAD_FALLBACK_TOKEN_RATE: float = 4.0
     VAD_FALLBACK_MAX_NEW_TOKENS: int = 96
     VAD_FALLBACK_PREFIX_CHARS: int = 40
+
+    # Runtime backend selection
+    BACKEND: str = args.backend
 
     # Upload settings
     UPLOAD_DIR: str = "./uploads"

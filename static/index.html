@@ -118,6 +118,58 @@
 						<button class="btn-primary" id="btnStart" disabled>开始转写</button>
 					</div>
 
+					<!-- ═══ VLLM TEST ═══ -->
+					<div class="card vllm-card">
+						<div class="card-title">vLLM 后端测试</div>
+						<div class="vllm-hint">
+							复用上方已选择的音频文件，请使用 <code>--backend=vllm</code>
+							启动服务。首次转写会懒加载 vLLM 模型。
+						</div>
+
+						<div class="vllm-health" id="vllmHealthBox">
+							<span class="status-dot"></span>
+							<span id="vllmHealthText">等待检查 vLLM 状态</span>
+						</div>
+
+						<div class="config-grid vllm-config-grid">
+							<div class="config-item">
+								<label>语言</label>
+								<select id="vllmLanguage">
+									<option value="">自动检测</option>
+									<option value="Chinese">中文</option>
+									<option value="English">英文</option>
+								</select>
+							</div>
+							<div class="config-item">
+								<div class="switch-row">
+									<label>返回时间戳</label>
+									<label class="switch"
+										><input type="checkbox" id="vllmReturnTimestamps" /><span
+											class="slider"
+										></span
+									></label>
+								</div>
+							</div>
+							<div class="config-item full">
+								<label>上下文提示词</label>
+								<textarea
+									id="vllmContext"
+									placeholder="可选，为 vLLM 模型提供上下文提示…"
+									rows="2"
+								></textarea>
+							</div>
+						</div>
+
+						<div class="vllm-actions">
+							<button class="btn-copy" id="btnVllmHealth" type="button">
+								检查 vLLM 状态
+							</button>
+							<button class="btn-primary" id="btnVllmStart" disabled>
+								使用当前文件测试 vLLM
+							</button>
+						</div>
+					</div>
+
 					<!-- ═══ RECORDING ═══ -->
 					<div class="card">
 						<div class="card-title">实时录音转写</div>

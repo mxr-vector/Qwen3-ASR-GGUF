@@ -20,7 +20,6 @@ from core.middleware_request_id import RequestIDMiddleware
 from core.middleware_access_log import AccessLogMiddleware
 from core.middleware_auth import TokenAuthMiddleware
 from fastapi.middleware.cors import CORSMiddleware
-import services.asr_service as asr_module
 from fastapi.responses import FileResponse
 import os
 import sys
@@ -69,17 +68,26 @@ async def lifespan(app: FastAPI):
     logger.info(f"  GPU: {args.use_gpu}")
     logger.info("=" * 50)
 
-    # 初始化 ASR 服务单例
-    service = asr_module.ASRService()
-    service.initialize()
-    asr_module.asr_service = service
+    # 初始化 ASR 服务单例：默认 ONNX/GGUF 路线启动现有服务；vLLM 路线由独立路由懒加载。
+    service = None
+    if settings.BACKEND == "onnx":
+        import services.asr_service as asr_module
+
+        service = asr_module.ASRService()
+        service.initialize()
+        asr_module.asr_service = service
+    else:
+        asr_module = None
+        logger.info("运行时后端为 vLLM，跳过 GGUF/ONNX ASR 服务初始化")
 
     yield
 
     # ─── Shutdown ───
     logger.info("正在关闭 Qwen3-ASR Web 服务...")
-    service.shutdown()
-    asr_module.asr_service = None
+    if service is not None:
+        service.shutdown()
+    if asr_module is not None:
+        asr_module.asr_service = None
     logger.info("服务已停止")
 
 # 配置允许跨域的域名

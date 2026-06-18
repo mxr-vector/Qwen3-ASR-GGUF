@@ -4,6 +4,8 @@ from enum import Enum, auto
 from typing import Any, List, Optional, Tuple
 import numpy as np
 
+from core.config import settings
+
 
 class MsgType(Enum):
     CMD_ENCODE = auto()  # 主进程 -> Encoder: 编码请求
@@ -76,10 +78,10 @@ class AlignerConfig:
 
     model_dir: str
     # 拆分为 Frontend 和 Backend
-    encoder_frontend_fn: str = "qwen3_aligner_encoder_frontend.fp16.onnx"
-    encoder_backend_fn: str = "qwen3_aligner_encoder_backend.fp16.onnx"
+    encoder_frontend_fn: str = settings.ALIGNER_ENCODER_FRONTEND_FN
+    encoder_backend_fn: str = settings.ALIGNER_ENCODER_BACKEND_FN
 
-    llm_fn: str = "qwen3_aligner_llm.f16.gguf"
+    llm_fn: str = settings.ALIGNER_LLM_FN
     use_gpu: bool = False
     n_ctx: int = 2048  # 对于 Aligner Decoder，每秒音频+文字，约占 30 个 token
     pad_to: Optional[int] = None  # Encoder 填充时长
@@ -98,7 +100,7 @@ class VADConfig:
     speech_threshold: 初始帧语音概率阈值（自适应算法会根据概率分布动态调整）
     """
 
-    model_dir: str = "models/FireRedVAD/VAD"
+    model_dir: str = settings.VAD_MODEL_DIR
     use_gpu: bool = False
     # VAD 策略：recall=召回优先，balanced=折中，speed=速度优先
     vad_mode: str = "recall"
@@ -203,10 +205,10 @@ class ASREngineConfig:
 
     model_dir: str
     # 拆分为 Frontend 和 Backend
-    encoder_frontend_fn: str = "qwen3_asr_encoder_frontend.fp16.onnx"
-    encoder_backend_fn: str = "qwen3_asr_encoder_backend.fp16.onnx"
+    encoder_frontend_fn: str = settings.ASR_ENCODER_FRONTEND_FN
+    encoder_backend_fn: str = settings.ASR_ENCODER_BACKEND_FN
 
-    llm_fn: str = "qwen3_asr_llm.f16.gguf"
+    llm_fn: str = settings.ASR_LLM_FN
     use_gpu: bool = False
     n_gpu_layers: int = -1  # -1=自动(use_gpu时99,否则0), 0=纯CPU, 99=全部offload
     n_ctx: int = 2048  # 对于 ASR Decoder，每秒音频+文字，约占 20 个 token

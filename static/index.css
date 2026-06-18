@@ -532,6 +532,46 @@ header h1::before {
 	gap: 16px;
 }
 
+/* ── vLLM Test ──────────────────────────────── */
+.vllm-hint {
+	color: var(--text-secondary);
+	font-size: 0.82rem;
+	margin-bottom: 12px;
+}
+.vllm-hint code {
+	font-family: var(--mono);
+	color: var(--cyan);
+	background: var(--bg-secondary);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 1px 5px;
+}
+.vllm-health {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	background: var(--bg-secondary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	font-family: var(--mono);
+	font-size: 0.78rem;
+	color: var(--text-secondary);
+}
+.vllm-config-grid {
+	padding-top: 12px;
+}
+.vllm-actions {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 10px;
+	align-items: center;
+	margin-top: 14px;
+}
+.vllm-actions .btn-primary {
+	margin-top: 0;
+}
+
 /* ── Recording ──────────────────────────────── */
 .recording-controls {
 	display: flex;
@@ -672,5 +712,8 @@ header h1::before {
 	}
 	.dropzone {
 		padding: 24px 14px;
+	}
+	.vllm-actions {
+		grid-template-columns: 1fr;
 	}
 }

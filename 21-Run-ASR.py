@@ -33,6 +33,8 @@ _setup_nvidia_paths()
 import time
 from pathlib import Path
 
+from core.config import settings
+
 # 添加项目路径
 sys.path.append(str(Path(__file__).parent.absolute()))
 
@@ -69,7 +71,7 @@ DEMO_DISABLE_VAD = os.getenv("DEMO_DISABLE_VAD", "1").strip().lower() not in {
 
 # VAD 模型路径（FireRedVAD 非流式版本）
 # VAD 由 dynamic_chunk_threshold 自动控制：音频 > 阈值时延迟加载
-VAD_MODEL_DIR = "models/FireRedVAD/VAD"
+VAD_MODEL_DIR = settings.VAD_MODEL_DIR
 
 
 # ─── 引擎配置 ─────────────────────────────────────────────────────────────────
@@ -103,14 +105,20 @@ def build_config() -> ASREngineConfig:
     )
 
     return ASREngineConfig(
-        model_dir="models",
+        model_dir=settings.MODEL_DIR,
+        encoder_frontend_fn=settings.ASR_ENCODER_FRONTEND_FN,
+        encoder_backend_fn=settings.ASR_ENCODER_BACKEND_FN,
+        llm_fn=settings.ASR_LLM_FN,
         use_gpu=True,
         chunk_size=30.0,  # 动态分片模式下为单分片的最大时间跨度上限
         memory_num=1,  # 保留前 N 片文本作为上下文
         enable_aligner=False,  # 关闭对齐以降低 RTF，需要字级时间戳时再开启
         align_config=AlignerConfig(
             use_gpu=True,
-            model_dir="models",
+            model_dir=settings.MODEL_DIR,
+            encoder_frontend_fn=settings.ALIGNER_ENCODER_FRONTEND_FN,
+            encoder_backend_fn=settings.ALIGNER_ENCODER_BACKEND_FN,
+            llm_fn=settings.ALIGNER_LLM_FN,
         ),
         vad_config=vad_cfg,
         dynamic_chunk_threshold=10.0,  # 音频 > 10s 时自动启用 VAD 动态分片

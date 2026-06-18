@@ -94,6 +94,9 @@ class ASRService:
         align_config = AlignerConfig(
             use_gpu=False,
             model_dir=settings.MODEL_DIR,
+            encoder_frontend_fn=settings.ALIGNER_ENCODER_FRONTEND_FN,
+            encoder_backend_fn=settings.ALIGNER_ENCODER_BACKEND_FN,
+            llm_fn=settings.ALIGNER_LLM_FN,
         )
 
         # 始终创建 VAD 配置（即使未显式启用 VAD，动态分片也可能需要延迟加载）
@@ -128,6 +131,9 @@ class ASRService:
 
         return ASREngineConfig(
             model_dir=settings.MODEL_DIR,
+            encoder_frontend_fn=settings.ASR_ENCODER_FRONTEND_FN,
+            encoder_backend_fn=settings.ASR_ENCODER_BACKEND_FN,
+            llm_fn=settings.ASR_LLM_FN,
             use_gpu=settings.USE_GPU,
             n_gpu_layers=settings.N_GPU_LAYERS,
             chunk_size=settings.ASR_CHUNK_SIZE,

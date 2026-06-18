@@ -27,9 +27,9 @@ dependencies = [
 # 指定 extra 依赖
 [project.optional-dependencies]
 cpu = [
-  "torch==2.10.0+cpu",
-  "torchvision==0.25.0+cpu",
-  "torchaudio==2.10.0+cpu",
+  "torch==2.11.0+cpu",
+  "torchvision==0.26.0+cpu",
+  "torchaudio==2.11.0+cpu",
   "onnxruntime",
 ]
 
@@ -37,6 +37,13 @@ cu128 = [
   "torch==2.10.0+cu128",
   "torchvision==0.25.0+cu128",
   "torchaudio==2.10.0+cu128",
+  "onnxruntime-gpu",
+]
+
+cu130 = [
+  "torch==2.11.0+cu130",
+  "torchvision==0.26.0+cu130",
+  "torchaudio==2.11.0+cu130",
   "onnxruntime-gpu",
 ]
 
@@ -53,6 +60,7 @@ conflicts = [
     { extra = "cpu" },
     { extra = "win" },
     { extra = "cu128" },
+    { extra = "cu130" },
   ],
 ]
 
@@ -62,16 +70,20 @@ torch = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cpu", extra = "win" },
   { index = "pytorch-cu128", extra = "cu128" },
+  { index = "pytorch-cu130", extra = "cu130" },
+  
 ]
 torchvision = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cpu", extra = "win" },
   { index = "pytorch-cu128", extra = "cu128" },
+  { index = "pytorch-cu130", extra = "cu130" },
 ]
 torchaudio = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cpu", extra = "win" },
   { index = "pytorch-cu128", extra = "cu128" },
+  { index = "pytorch-cu130", extra = "cu130" },
 ]
 
 # 官方 PyPI 镜像（默认国内源可选）
@@ -99,3 +111,8 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://mirrors.nju.edu.cn/pytorch/whl/cu128"
+
+# PyTorch 官方 GPU wheel
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://mirrors.nju.edu.cn/pytorch/whl/cu130"

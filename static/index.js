@@ -27,9 +27,14 @@
 	const summaryBar = $("summaryBar");
 	const btnCopy = $("btnCopy");
 	const btnClear = $("btnClear");
+	const vllmHealthBox = $("vllmHealthBox");
+	const vllmHealthText = $("vllmHealthText");
+	const btnVllmHealth = $("btnVllmHealth");
+	const btnVllmStart = $("btnVllmStart");
 
 	let selectedFile = null;
 	let isTranscribing = false;
+	let isVllmTranscribing = false;
 	let allTexts = [];
 
 	// ── Docs link ──────────────────────────────
@@ -76,6 +81,50 @@
 	checkHealth();
 	setInterval(checkHealth, 30000);
 
+	// ── vLLM health check ───────────────────────
+	function setVllmHealth(cls, text) {
+		const dot = vllmHealthBox.querySelector(".status-dot");
+		dot.className = "status-dot" + (cls ? " " + cls : "");
+		vllmHealthText.textContent = text;
+	}
+
+	async function checkVllmHealth() {
+		btnVllmHealth.disabled = true;
+		btnVllmHealth.textContent = "检查中…";
+		setVllmHealth("", "正在检查 vLLM 状态…");
+		try {
+			const res = await fetch(API_PREFIX + "/transcribe-vllm/health", {
+				headers: { Authorization: AUTH_TOKEN },
+			});
+			if (!res.ok) {
+				setVllmHealth("fail", `vLLM 服务不可用 (HTTP ${res.status})`);
+				return;
+			}
+			const json = await res.json();
+			if (json.code !== 200 || !json.data) {
+				setVllmHealth("fail", json.msg || "vLLM 状态检查失败");
+				return;
+			}
+
+			const d = json.data;
+			const parts = [
+				d.backend_enabled ? "后端已启用" : "后端未启用",
+				d.initialized ? "模型已加载" : "模型未加载",
+				"模型: " + d.model,
+			];
+			if (d.forced_aligner_enabled) parts.push("Aligner: " + d.forced_aligner);
+			setVllmHealth(d.backend_enabled ? "ok" : "fail", parts.join(" · "));
+		} catch (err) {
+			setVllmHealth("fail", "vLLM 连接失败: " + err.message);
+		} finally {
+			btnVllmHealth.disabled = false;
+			btnVllmHealth.textContent = "检查 vLLM 状态";
+		}
+	}
+
+	btnVllmHealth.addEventListener("click", checkVllmHealth);
+	checkVllmHealth();
+
 	// ── File helpers ───────────────────────────
 	function formatSize(bytes) {
 		if (bytes < 1024) return bytes + " B";
@@ -90,6 +139,7 @@
 		fileSize.textContent = formatSize(file.size);
 		fileInfo.classList.add("show");
 		btnStart.disabled = false;
+		btnVllmStart.disabled = false;
 	}
 
 	function clearFile() {
@@ -97,6 +147,7 @@
 		fileInput.value = "";
 		fileInfo.classList.remove("show");
 		btnStart.disabled = true;
+		btnVllmStart.disabled = true;
 	}
 
 	// ── Dropzone ───────────────────────────────
@@ -166,7 +217,8 @@
 	}
 
 	// ── SSE Event Dispatcher ──────────────────
-	function processSSEEvent(evt) {
+	function processSSEEvent(evt, stats) {
+		stats = stats || {};
 		if (evt.event === "start") {
 			try {
 				const d = JSON.parse(evt.data);
@@ -207,14 +259,21 @@
 		} else if (evt.event === "done") {
 			try {
 				const d = JSON.parse(evt.data);
-				appendLog("✓ 转写完成", "event-done");
+				const elapsedSeconds = stats.startedAt
+					? (Date.now() - stats.startedAt) / 1000
+					: null;
+				const doneParts = ["✓ 转写完成"];
+				if (elapsedSeconds != null) doneParts.push("耗时 " + fmtDuration(elapsedSeconds));
+				if (d.duration != null) doneParts.push("音频 " + fmtDuration(d.duration));
+				appendLog(doneParts.join(" · "), "event-done");
+
 				summaryBar.innerHTML = "";
-				const items = [
-					"时长: " + d.duration + "s",
-					"分片: " + d.chunks_total,
-					"空片: " + d.chunks_empty,
-					"心跳: " + heartbeats,
-				];
+				const items = [];
+				if (elapsedSeconds != null) items.push("耗时: " + fmtDuration(elapsedSeconds));
+				if (d.duration != null) items.push("音频: " + fmtDuration(d.duration));
+				if (d.chunks_total != null) items.push("分片: " + d.chunks_total);
+				if (d.chunks_empty != null) items.push("空片: " + d.chunks_empty);
+				items.push("心跳: " + (stats.heartbeats || 0));
 				items.forEach((text) => {
 					const span = document.createElement("span");
 					span.textContent = text;
@@ -241,12 +300,16 @@
 		if (!selectedFile || isTranscribing) return;
 		isTranscribing = true;
 		btnStart.disabled = true;
+		btnVllmStart.disabled = true;
 		btnStart.textContent = "转写中…";
 		clearLog();
 		resultArea.classList.add("show");
 		liveIndicator.style.display = "flex";
 		heartbeatBadge.textContent = "";
-		let heartbeats = 0;
+		const streamStats = {
+			startedAt: Date.now(),
+			heartbeats: 0,
+		};
 
 		const formData = new FormData();
 		formData.append("file", selectedFile);
@@ -286,7 +349,7 @@
 							const trimmed = raw.trim();
 							if (!trimmed || trimmed.startsWith(":")) continue;
 							const evt = parseSSEEvent(trimmed);
-							processSSEEvent(evt);
+							processSSEEvent(evt, streamStats);
 						}
 					}
 					break;
@@ -302,13 +365,13 @@
 
 					// Pure comment line (heartbeat)
 					if (trimmed.startsWith(":")) {
-						heartbeats++;
-						heartbeatBadge.textContent = "💓" + heartbeats;
+						streamStats.heartbeats++;
+						heartbeatBadge.textContent = "💓" + streamStats.heartbeats;
 						continue;
 					}
 
 					const evt = parseSSEEvent(trimmed);
-					processSSEEvent(evt);
+					processSSEEvent(evt, streamStats);
 				}
 			}
 		} catch (err) {
@@ -318,10 +381,98 @@
 		finishTranscribe();
 	}
 
+	// ── vLLM file test ──────────────────────────
+	btnVllmStart.addEventListener("click", startVllmTranscribe);
+
+	async function startVllmTranscribe() {
+		if (!selectedFile || isVllmTranscribing) return;
+		isVllmTranscribing = true;
+		btnVllmStart.disabled = true;
+		btnStart.disabled = true;
+		btnVllmStart.textContent = "vLLM 转写中…";
+		clearLog();
+		resultArea.classList.add("show");
+		liveIndicator.style.display = "flex";
+		heartbeatBadge.textContent = "vLLM";
+		appendLog("● vLLM 转写开始 — " + escHtml(selectedFile.name), "event-start");
+
+		const formData = new FormData();
+		formData.append("file", selectedFile);
+		const lang = $("vllmLanguage").value;
+		if (lang) formData.append("language", lang);
+		const ctx = $("vllmContext").value.trim();
+		if (ctx) formData.append("context", ctx);
+		formData.append("return_timestamps", $("vllmReturnTimestamps").checked);
+
+		try {
+			const response = await fetch(API_PREFIX + "/transcribe-vllm/file", {
+				method: "POST",
+				headers: { Authorization: AUTH_TOKEN },
+				body: formData,
+			});
+			if (!response.ok) {
+				appendLog("✗ vLLM 错误: HTTP " + response.status, "event-error");
+				return;
+			}
+			const json = await response.json();
+			if (json.code !== 200 || !json.data) {
+				appendLog(
+					"✗ vLLM 错误: " + escHtml(json.msg || "响应数据异常"),
+					"event-error",
+				);
+				return;
+			}
+
+			const d = json.data;
+			if (d.text) {
+				appendLog('<span class="text">' + escHtml(d.text) + "</span>", "event-chunk");
+				allTexts.push(d.text);
+			}
+			if (d.timestamps && d.timestamps.length) {
+				d.timestamps.forEach((item) => {
+					const ts = "[" + fmtTime(item.start) + " → " + fmtTime(item.end) + "]";
+					appendLog(
+						'<span class="timestamp">' +
+							ts +
+							'</span><span class="text">' +
+							escHtml(item.text) +
+							"</span>",
+						"event-chunk",
+					);
+				});
+			}
+			appendLog("✓ vLLM 转写完成", "event-done");
+			summaryBar.innerHTML = "";
+			[
+				"后端: vLLM",
+				"语言: " + (d.language || "--"),
+				"耗时: " + d.elapsed + "s",
+			].forEach((text) => {
+				const span = document.createElement("span");
+				span.textContent = text;
+				summaryBar.appendChild(span);
+			});
+			summaryBar.classList.add("show");
+			setVllmHealth("ok", "后端已启用 · 模型已加载 · 模型: " + d.model);
+		} catch (err) {
+			appendLog("✗ vLLM 网络错误: " + escHtml(err.message), "event-error");
+		} finally {
+			isVllmTranscribing = false;
+			liveIndicator.style.display = "none";
+			heartbeatBadge.textContent = "";
+			btnVllmStart.disabled = !selectedFile || isTranscribing;
+			btnStart.disabled = !selectedFile || isTranscribing;
+			btnVllmStart.textContent = "使用当前文件测试 vLLM";
+			if (allTexts.length > 0) btnCopy.style.display = "inline-block";
+			btnClear.style.display = "inline-block";
+		}
+	}
+
 	function finishTranscribe() {
 		isTranscribing = false;
 		liveIndicator.style.display = "none";
 		btnStart.disabled = !selectedFile;
+		btnVllmStart.disabled = !selectedFile || isVllmTranscribing;
 		btnStart.textContent = "开始转写";
 		if (allTexts.length > 0) {
 			btnCopy.style.display = "inline-block";
@@ -350,6 +501,10 @@
 		const m = Math.floor(sec / 60);
 		const s = (sec % 60).toFixed(1);
 		return m > 0 ? m + ":" + s.padStart(4, "0") : s + "s";
+	}
+	function fmtDuration(sec) {
+		if (sec == null || Number.isNaN(Number(sec))) return "--";
+		return Number(sec).toFixed(2) + "s";
 	}
 	function escHtml(s) {
 		const d = document.createElement("div");

@@ -24,6 +24,13 @@ def load_routers(app: FastAPI, package: str = "routers"):
             load_routers(app, full_name, parent_router, is_root=False)
         else:
             # 模块 → 尝试加载 router
+            if args.backend == "vllm" and full_name == "routers.transcribe":
+                logger.info("运行时后端为 vLLM，跳过 GGUF/ONNX 转写路由加载")
+                continue
+            if args.backend == "onnx" and full_name == "routers.transcribe_vllm":
+                logger.info("运行时后端为 ONNX/GGUF，跳过 vLLM 转写路由加载")
+                continue
+
             module = importlib.import_module(full_name)
             if hasattr(module, "router") and isinstance(module.router, APIRouter):
                 parent_router.include_router(module.router)
