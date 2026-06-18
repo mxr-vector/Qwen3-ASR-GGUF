@@ -238,6 +238,8 @@ Web API 的 `transcribe` / `stream` 接口默认复用单例 ASR 引擎。
 - VAD 安全跳过阈值：`ASR_VAD_MAX_SAFE_SKIP_SEC` / `ASR_VAD_BALANCED_MAX_SAFE_SKIP_SEC` / `ASR_VAD_SPEED_MAX_SAFE_SKIP_SEC`
 - VAD 语音边界补偿：`ASR_VAD_CONTEXT_PRE_SEC` / `ASR_VAD_CONTEXT_POST_SEC`
 - VAD 短语音跳过阈值：`ASR_VAD_MIN_SPEECH_SKIP_SEC` / `ASR_VAD_SPEED_MIN_SPEECH_SKIP_SEC`
+- VAD 阴性区间二次判定：`ASR_VAD_SILENCE_PROB_THRESHOLD` / `ASR_VAD_SILENCE_RMS_THRESHOLD` / `ASR_VAD_SUSPICIOUS_PROB_THRESHOLD`
+- VAD fallback 防幻觉预算：`ASR_VAD_FALLBACK_TOKEN_RATE` / `ASR_VAD_FALLBACK_MAX_NEW_TOKENS` / `ASR_VAD_FALLBACK_PREFIX_CHARS`
 - 分片长度：`ASR_ASR_CHUNK_SIZE`
 - 上下文记忆片段数：`ASR_ASR_MEMORY_NUM`
 - 是否启用对齐：`ASR_ENABLE_ALIGNER`
@@ -259,6 +261,12 @@ export ASR_VAD_CONTEXT_PRE_SEC=0.6
 export ASR_VAD_CONTEXT_POST_SEC=0.8
 export ASR_VAD_MIN_SPEECH_SKIP_SEC=0
 export ASR_VAD_SPEED_MIN_SPEECH_SKIP_SEC=0.3
+export ASR_VAD_SILENCE_PROB_THRESHOLD=0.08
+export ASR_VAD_SILENCE_RMS_THRESHOLD=0.002
+export ASR_VAD_SUSPICIOUS_PROB_THRESHOLD=0.18
+export ASR_VAD_FALLBACK_TOKEN_RATE=4
+export ASR_VAD_FALLBACK_MAX_NEW_TOKENS=96
+export ASR_VAD_FALLBACK_PREFIX_CHARS=40
 export ASR_ASR_CHUNK_SIZE=30
 export ASR_ASR_MEMORY_NUM=1
 export ASR_ENABLE_ALIGNER=false
@@ -268,10 +276,12 @@ export ASR_DEFAULT_CONTEXT=""
 
 说明：
 
-- `ASR_VAD_MODE=recall` 是默认模式，适合完整转写：VAD 只跳过很短静音，较长 VAD 阴性区间会回退给 ASR 复核以减少丢句子。
+- `ASR_VAD_MODE=recall` 是默认模式，适合完整转写：VAD 会跳过短静音和高置信长静音，较长且不确定的 VAD 阴性区间会回退给 ASR 复核以减少丢句子。
 - `ASR_VAD_MODE=balanced` 使用 `ASR_VAD_BALANCED_MAX_SAFE_SKIP_SEC` 作为折中跳过阈值。
 - `ASR_VAD_MODE=speed` 使用 `ASR_VAD_SPEED_MAX_SAFE_SKIP_SEC` 和 `ASR_VAD_SPEED_MIN_SPEECH_SKIP_SEC`，更接近旧的速度优先行为；适合更重视吞吐且可接受 VAD 漏检风险的场景。
 - recall/balanced 模式下自适应 VAD 阈值只会降低，不会上调；如需更强静音过滤可使用 speed 模式。
+- 长 VAD 阴性区间会结合 FireRedVAD 帧级概率和音频 RMS 二次分级：概率与能量都很低时按高置信静音跳过；存在近阈值概率峰值时保留 fallback 复核。
+- fallback 复核使用更小的输出 token 预算和更短的前文上下文，降低长静音/低信息音频诱发幻觉的概率。
 - `ASR_ENABLE_ALIGNER=false` 更适合追求吞吐；仅在需要时间戳时开启。
 - 修改上述配置后需要**重启 Web 服务**，新配置才会生效。
 

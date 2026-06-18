@@ -54,7 +54,18 @@ CONTEXT = os.getenv("DEMO_CONTEXT", "")
 # 演示模式：
 #   "offline"  - 离线转写（等待全部处理完毕后一次性输出）
 #   "stream"   - 流式转写（逐分片实时打印，模拟 SSE 场景）
-DEMO_MODE = os.getenv("DEMO_MODE", "offline")
+DEMO_MODE = os.getenv("DEMO_MODE", "stream")
+
+# 召回优先：默认关闭 VAD 动态分片，避免长音频在动态切块时漏字。
+# 如需观察 VAD 效果，可设置 DEMO_DISABLE_VAD=0。
+DEMO_DISABLE_VAD = os.getenv("DEMO_DISABLE_VAD", "1").strip().lower() not in {
+    "0",
+    "false",
+    "f",
+    "no",
+    "n",
+    "off",
+}
 
 # VAD 模型路径（FireRedVAD 非流式版本）
 # VAD 由 dynamic_chunk_threshold 自动控制：音频 > 阈值时延迟加载
@@ -83,6 +94,12 @@ def build_config() -> ASREngineConfig:
         context_post_sec=0.8,
         min_speech_skip_sec=0.0,  # 不因语音短而跳过“嗯/对/好”等短句
         speed_min_speech_skip_sec=0.3,
+        silence_prob_threshold=0.08,  # FireRedVAD 概率和能量都很低时，长静音也跳过
+        silence_rms_threshold=0.002,
+        suspicious_prob_threshold=0.18,  # 近阈值 VAD 阴性区间提升为 fallback 复核
+        fallback_token_rate=4.0,
+        fallback_max_new_tokens=96,
+        fallback_prefix_chars=40,
     )
 
     return ASREngineConfig(
@@ -150,6 +167,7 @@ def demo_stream(engine: QwenASREngine):
         language="Chinese",
         start_second=0,
         duration=None,
+        disable_vad=DEMO_DISABLE_VAD,
     ):
         chunk_count += 1
 

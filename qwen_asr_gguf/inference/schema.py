@@ -125,8 +125,17 @@ class VADConfig:
     min_speech_skip_sec: float = 0.0
     # speed 模式保留旧行为：极短语音直接跳过以换取更低幻觉/更高吞吐
     speed_min_speech_skip_sec: float = 0.3
-    # 长音频 VAD 语音占比低于该值时，认为 VAD 输出过稀疏并回退到固定分片
+    # 长音频 VAD 语音占比低于该值时，标记为稀疏结果并启用更保守的 fallback 统计
     min_speech_coverage: float = 0.02
+    # VAD 阴性区间二次判定：帧级概率和能量都低于阈值时，即使很长也视为高置信静音
+    silence_prob_threshold: float = 0.08
+    silence_rms_threshold: float = 0.002
+    # VAD 阴性区间若存在接近语音的概率峰值，recall/balanced 模式下会提升为 fallback 复核
+    suspicious_prob_threshold: float = 0.18
+    # fallback 复核不是普通语音：限制 token 预算和文本上下文，降低静音/噪声幻觉
+    fallback_token_rate: float = 4.0
+    fallback_max_new_tokens: int = 96
+    fallback_prefix_chars: int = 40
 
     def __post_init__(self):
         mode = self.vad_mode.strip().lower()
@@ -143,6 +152,7 @@ class VADResult:
     timestamps: List[Tuple[float, float]]  # 语音区间列表 [(start_sec, end_sec), ...]
     duration: float  # 音频总时长 (秒)
     detect_time: float = 0.0  # VAD 检测耗时 (秒)
+    probs: Optional[np.ndarray] = None  # FireRedVAD 帧级概率，用于 VAD 阴性区间二次分级
 
     @property
     def speech_ratio(self) -> float:
@@ -169,6 +179,9 @@ class VADChunk:
     speech_segments: List[Tuple[float, float]] = field(default_factory=list)
     source: str = "vad"  # vad | silence | fallback | fixed
     skip_reason: str = ""
+    vad_prob_max: float = 0.0
+    vad_prob_mean: float = 0.0
+    rms: float = 0.0
     # speech_segments: VAD 检测到的语音段列表 [(start_sec, end_sec), ...]，坐标相对于原始音频
 
     @property

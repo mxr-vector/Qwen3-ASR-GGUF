@@ -696,6 +696,8 @@ class QwenASREngine:
             "vad_speech_chunks": 0,
             "vad_silence_chunks": 0,
             "vad_fallback_chunks": 0,
+            "vad_high_conf_silence_chunks": 0,
+            "vad_suspicious_fallback_chunks": 0,
             "vad_longest_skipped_span": 0.0,
             "vad_skip_details": [],
             "vad_sparse_fallback": False,
@@ -765,24 +767,24 @@ class QwenASREngine:
 
             vad_config = self.config.vad_config
             sparse_vad = vad_result.speech_ratio < vad_config.min_speech_coverage
-
             if sparse_vad:
-                vad_mode = False
                 stats["vad_sparse_fallback"] = True
-                all_chunks = _fixed_chunks()
                 logger.warning(
                     f"[VAD] 语音覆盖率 {vad_result.speech_ratio * 100:.2f}% "
                     f"低于阈值 {vad_config.min_speech_coverage * 100:.2f}%，"
-                    "回退到固定分片以避免漏识别"
+                    "改用概率/能量分级保护，避免纯长静音整体回退固定分片"
                 )
-            else:
-                all_chunks = self.vad.build_chunks(
-                    timestamps=vad_result.timestamps,
-                    total_dur=total_duration,
-                    max_span_sec=chunk_size_sec,
-                    context_pre_sec=vad_config.context_pre_sec,
-                    context_post_sec=vad_config.context_post_sec,
-                )
+
+            all_chunks = self.vad.build_chunks(
+                timestamps=vad_result.timestamps,
+                total_dur=total_duration,
+                max_span_sec=chunk_size_sec,
+                context_pre_sec=vad_config.context_pre_sec,
+                context_post_sec=vad_config.context_post_sec,
+                probs=vad_result.probs,
+                audio=audio,
+                sr=sr,
+            )
 
             stats["vad_speech_chunks"] = sum(
                 1 for c in all_chunks if getattr(c, "source", "") == "vad"
@@ -793,6 +795,15 @@ class QwenASREngine:
             stats["vad_fallback_chunks"] = sum(
                 1 for c in all_chunks if getattr(c, "source", "") == "fallback"
             )
+            stats["vad_high_conf_silence_chunks"] = sum(
+                1 for c in all_chunks if getattr(c, "skip_reason", "") == "vad_high_conf_silence"
+            )
+            stats["vad_suspicious_fallback_chunks"] = sum(
+                1
+                for c in all_chunks
+                if getattr(c, "source", "") == "fallback"
+                and getattr(c, "vad_prob_max", 0.0) >= vad_config.suspicious_prob_threshold
+            )
             if self.verbose:
                 logger.info(
                     f"[VAD] 动态分片完成 | 音频 {total_duration:.1f}s | "
@@ -800,7 +811,8 @@ class QwenASREngine:
                     f"覆盖率 {stats['vad_speech_coverage'] * 100:.2f}% | "
                     f"语音={stats['vad_speech_chunks']} "
                     f"静音={stats['vad_silence_chunks']} "
-                    f"fallback={stats['vad_fallback_chunks']}"
+                    f"fallback={stats['vad_fallback_chunks']} "
+                    f"高置信静音={stats['vad_high_conf_silence_chunks']}"
                 )
 
         else:
@@ -909,6 +921,13 @@ class QwenASREngine:
 
                 if vad_mode and chunk_source == "fallback":
                     speech_sec = end_sec - start_sec
+                    if self.verbose:
+                        logger.debug(
+                            f"  [VAD] fallback 分片 #{i:02d} "
+                            f"span={speech_sec:.2f}s "
+                            f"prob_max={getattr(chunk_def, 'vad_prob_max', 0.0):.3f} "
+                            f"rms={getattr(chunk_def, 'rms', 0.0):.5f}"
+                        )
 
                 if vad_mode:
                     # VAD 模式：直接按实际语音长度编码，无需补零
@@ -937,8 +956,11 @@ class QwenASREngine:
                     # 限制前缀长度（末尾 40 字符）：保持语境连贯，同时防止
                     # 前缀过长时 LLM 倾向于复读历史文本。
                     prefix_text = "".join(m[1] for m in asr_memory)
-                    if len(prefix_text) > 100:
-                        prefix_text = prefix_text[-100:]
+                    prefix_limit = 100
+                    if chunk_source == "fallback":
+                        prefix_limit = max(0, self.config.vad_config.fallback_prefix_chars)
+                    if len(prefix_text) > prefix_limit:
+                        prefix_text = prefix_text[-prefix_limit:] if prefix_limit > 0 else ""
                     full_embd = self._build_prompt_embd(
                         audio_feature, prefix_text, context, language
                     )
@@ -961,9 +983,15 @@ class QwenASREngine:
                             audio_feature, prefix_text, context, language
                         )
 
-                # token 预算：按实际语音时长等比缩放（12 tokens/s 上限）
-                # 例：5s 语音 → 最多 60 tokens，防止在短/稀疏音频上过度生成
-                max_new_tokens = min(512, max(32, int(speech_sec * 12)))
+                # token 预算：普通语音按实际语音时长等比缩放；fallback 是低信任复核路径，
+                # 使用更小预算，避免长静音/低信息音频获得过大的幻觉空间。
+                if vad_mode and chunk_source == "fallback":
+                    max_new_tokens = min(
+                        self.config.vad_config.fallback_max_new_tokens,
+                        max(16, int(speech_sec * self.config.vad_config.fallback_token_rate)),
+                    )
+                else:
+                    max_new_tokens = min(512, max(32, int(speech_sec * 12)))
 
                 res = self._safe_decode(
                     full_embd,

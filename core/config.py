@@ -122,6 +122,12 @@ class Settings(BaseSettings):
     VAD_MIN_SPEECH_SKIP_SEC: float = 0.0
     VAD_SPEED_MIN_SPEECH_SKIP_SEC: float = 0.3
     VAD_MIN_SPEECH_COVERAGE: float = 0.02
+    VAD_SILENCE_PROB_THRESHOLD: float = 0.08
+    VAD_SILENCE_RMS_THRESHOLD: float = 0.002
+    VAD_SUSPICIOUS_PROB_THRESHOLD: float = 0.18
+    VAD_FALLBACK_TOKEN_RATE: float = 4.0
+    VAD_FALLBACK_MAX_NEW_TOKENS: int = 96
+    VAD_FALLBACK_PREFIX_CHARS: int = 40
 
     # Upload settings
     UPLOAD_DIR: str = "./uploads"

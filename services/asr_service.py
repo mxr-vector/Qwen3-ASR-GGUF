@@ -118,6 +118,12 @@ class ASRService:
             min_speech_skip_sec=settings.VAD_MIN_SPEECH_SKIP_SEC,
             speed_min_speech_skip_sec=settings.VAD_SPEED_MIN_SPEECH_SKIP_SEC,
             min_speech_coverage=settings.VAD_MIN_SPEECH_COVERAGE,
+            silence_prob_threshold=settings.VAD_SILENCE_PROB_THRESHOLD,
+            silence_rms_threshold=settings.VAD_SILENCE_RMS_THRESHOLD,
+            suspicious_prob_threshold=settings.VAD_SUSPICIOUS_PROB_THRESHOLD,
+            fallback_token_rate=settings.VAD_FALLBACK_TOKEN_RATE,
+            fallback_max_new_tokens=settings.VAD_FALLBACK_MAX_NEW_TOKENS,
+            fallback_prefix_chars=settings.VAD_FALLBACK_PREFIX_CHARS,
         )
 
         return ASREngineConfig(

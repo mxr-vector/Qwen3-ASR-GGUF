@@ -127,6 +127,7 @@ class QwenVADEngine:
             timestamps=timestamps,
             duration=reported_dur,
             detect_time=detect_time,
+            probs=np.asarray(_probs, dtype=np.float32).flatten() if _probs is not None else None,
         )
 
         if result.has_speech:
@@ -226,6 +227,7 @@ class QwenVADEngine:
             timestamps=timestamps,
             duration=audio_dur,
             detect_time=result.detect_time,
+            probs=probs_arr,
         )
 
     def _probs_to_timestamps(
@@ -312,6 +314,9 @@ class QwenVADEngine:
         context_pre_sec: Optional[float] = None,
         context_post_sec: Optional[float] = None,
         protect_long_gaps: bool = True,
+        probs: Optional[np.ndarray] = None,
+        audio: Optional[np.ndarray] = None,
+        sr: int = 16000,
     ) -> list:
         """
         根据 VAD 时间戳构建对齐语音边界的音频分片列表（VADChunk）。
@@ -322,8 +327,28 @@ class QwenVADEngine:
              分片；每个分片在首段前补 context_pre_sec、末段后补 context_post_sec
           3. 在语音分片之间插入静音分片，使输出完整覆盖 0 ~ total_dur 全域
           4. 超过当前 VAD 策略安全跳过阈值的静音分片会被拆成 fallback 分片送 ASR 复核
+          5. 若提供帧级概率/音频，则对 VAD 阴性区间做二次分级：高置信静音继续跳过，
+             近阈值可疑区间提升为 fallback，避免只按时长在“漏话/幻觉”之间二选一。
         """
         from .schema import VADChunk
+
+        probs_arr: Optional[np.ndarray] = None
+        if probs is not None:
+            try:
+                probs_arr = np.asarray(probs, dtype=np.float32).flatten()
+                if len(probs_arr) == 0:
+                    probs_arr = None
+            except (ValueError, TypeError):
+                probs_arr = None
+
+        audio_arr: Optional[np.ndarray] = None
+        if audio is not None:
+            try:
+                audio_arr = np.asarray(audio, dtype=np.float32).flatten()
+                if len(audio_arr) == 0:
+                    audio_arr = None
+            except (ValueError, TypeError):
+                audio_arr = None
 
         if context_pre_sec is None:
             context_pre_sec = self.config.context_pre_sec
@@ -334,6 +359,66 @@ class QwenVADEngine:
             for idx, chunk in enumerate(chunks):
                 chunk.idx = idx
             return chunks
+
+        def _gap_stats(start: float, end: float) -> Tuple[float, float, float]:
+            """返回 VAD 阴性区间的 (max_prob, mean_prob, rms)。"""
+            max_prob = 0.0
+            mean_prob = 0.0
+            if probs_arr is not None and total_dur > 0:
+                p_start = max(0, int(start / total_dur * len(probs_arr)))
+                p_end = min(len(probs_arr), int(np.ceil(end / total_dur * len(probs_arr))))
+                if p_end > p_start:
+                    gap_probs = probs_arr[p_start:p_end]
+                    max_prob = float(np.max(gap_probs))
+                    mean_prob = float(np.mean(gap_probs))
+
+            rms = 0.0
+            if audio_arr is not None:
+                s_smpl = max(0, int(start * sr))
+                e_smpl = min(len(audio_arr), int(np.ceil(end * sr)))
+                if e_smpl > s_smpl:
+                    gap_audio = audio_arr[s_smpl:e_smpl]
+                    rms = float(np.sqrt(np.mean(np.square(gap_audio))))
+
+            return max_prob, mean_prob, rms
+
+        def _make_silence_chunk(
+            start: float,
+            end: float,
+            reason: str,
+            prob_max: float,
+            prob_mean: float,
+            rms: float,
+        ):
+            return VADChunk(
+                idx=0,
+                start_sec=start,
+                end_sec=end,
+                has_speech=False,
+                source="silence",
+                skip_reason=reason,
+                vad_prob_max=prob_max,
+                vad_prob_mean=prob_mean,
+                rms=rms,
+            )
+
+        def _make_fallback_chunk(
+            start: float,
+            end: float,
+            prob_max: float,
+            prob_mean: float,
+            rms: float,
+        ):
+            return VADChunk(
+                idx=0,
+                start_sec=start,
+                end_sec=end,
+                has_speech=True,
+                source="fallback",
+                vad_prob_max=prob_max,
+                vad_prob_mean=prob_mean,
+                rms=rms,
+            )
 
         def _build_silence_chunks(start: float, end: float) -> list:
             if end <= start:
@@ -347,15 +432,40 @@ class QwenVADEngine:
             else:
                 max_safe_skip = self.config.max_safe_skip_sec
 
-            if not protect_long_gaps or span <= max_safe_skip:
+            prob_max, prob_mean, rms = _gap_stats(start, end)
+            has_prob_or_energy = probs_arr is not None or audio_arr is not None
+            high_conf_silence = (
+                has_prob_or_energy
+                and prob_max <= self.config.silence_prob_threshold
+                and rms <= self.config.silence_rms_threshold
+            )
+            suspicious_gap = (
+                probs_arr is not None
+                and prob_max >= self.config.suspicious_prob_threshold
+                and vad_mode in {"recall", "balanced"}
+            )
+
+            if high_conf_silence:
                 return [
-                    VADChunk(
-                        idx=0,
-                        start_sec=start,
-                        end_sec=end,
-                        has_speech=False,
-                        source="silence",
-                        skip_reason="vad_silence",
+                    _make_silence_chunk(
+                        start,
+                        end,
+                        "vad_high_conf_silence",
+                        prob_max,
+                        prob_mean,
+                        rms,
+                    )
+                ]
+
+            if not protect_long_gaps or (span <= max_safe_skip and not suspicious_gap):
+                return [
+                    _make_silence_chunk(
+                        start,
+                        end,
+                        "vad_silence",
+                        prob_max,
+                        prob_mean,
+                        rms,
                     )
                 ]
 
@@ -363,13 +473,14 @@ class QwenVADEngine:
             cursor = start
             while cursor < end:
                 chunk_end = min(cursor + max_span_sec, end)
+                c_prob_max, c_prob_mean, c_rms = _gap_stats(cursor, chunk_end)
                 chunks.append(
-                    VADChunk(
-                        idx=0,
-                        start_sec=cursor,
-                        end_sec=chunk_end,
-                        has_speech=True,
-                        source="fallback",
+                    _make_fallback_chunk(
+                        cursor,
+                        chunk_end,
+                        c_prob_max,
+                        c_prob_mean,
+                        c_rms,
                     )
                 )
                 cursor = chunk_end

@@ -187,6 +187,12 @@ async def transcribe_stream(
                     "speech_chunks": stats.get("vad_speech_chunks", 0),
                     "silence_chunks": stats.get("vad_silence_chunks", 0),
                     "fallback_chunks": stats.get("vad_fallback_chunks", 0),
+                    "high_conf_silence_chunks": stats.get(
+                        "vad_high_conf_silence_chunks", 0
+                    ),
+                    "suspicious_fallback_chunks": stats.get(
+                        "vad_suspicious_fallback_chunks", 0
+                    ),
                     "longest_skipped_span": round(
                         stats.get("vad_longest_skipped_span", 0.0), 3
                     ),
