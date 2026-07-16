@@ -20,7 +20,7 @@ class VLLMSettings(BaseSettings):
     MODEL: str = settings.VLLM_MODEL
     GPU_MEMORY_UTILIZATION: float = 0.9
     MAX_MODEL_LEN: int = 32768
-    MAX_NEW_TOKENS: int = 1024
+    MAX_NEW_TOKENS: int = 4096
     MAX_INFERENCE_BATCH_SIZE: int = 32
     MAX_CONCURRENT_TRANSCRIBES: int = 1
     INIT_TIMEOUT_SECONDS: float = 300.0

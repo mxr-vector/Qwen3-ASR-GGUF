@@ -140,6 +140,8 @@ uv pip install vllm --torch-backend=auto fireredvad transformers==4.57.6
 # WSL + RTX 50 系列等新架构显卡如遇到 FlashInfer 初始化失败，可禁用 FlashInfer sampler
 export VLLM_USE_FLASHINFER_SAMPLER=0
 
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+export PYTORCH_NVML_BASED_CUDA_CHECK=1
 # 16GB 显存运行 Qwen3-ASR-1.7B 时，建议提高可用显存比例，并将 vLLM max_model_len 降到 32768
 # 这两个值也是项目默认值，可按显存大小自行调整
 export ASR_VLLM_GPU_MEMORY_UTILIZATION=0.9
